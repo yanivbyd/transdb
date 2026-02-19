@@ -18,6 +18,16 @@ When the user is ready to commit, they will ask for a commit message suggestion.
 
 This is TranDB, a distributed in-memory key-value database written in Rust. See SPEC.md for full project specifications.
 
+## Development Guidelines
+
+**Testing Requirements:**
+- Every code change MUST include corresponding unit tests
+- Tests should cover new functionality, edge cases, and error conditions
+- Code without tests is incomplete
+- Unit tests MUST reside in their own dedicated files (e.g. `tests/unit_foo.rs`), NOT in inline `#[cfg(test)]` modules within source files
+- After writing tests, ALWAYS run `cargo llvm-cov` to verify coverage. Use the env vars from the Justfile if needed (`LLVM_COV` / `LLVM_PROFDATA`)
+- All new code must be covered. Uncovered lines must be either tested or explicitly justified (e.g. `run()` which blocks forever is inherently not unit-testable)
+
 ## Specification Workflow
 
 Specifications are developed iteratively through collaboration:

@@ -1,0 +1,15 @@
+[package]
+name = "trandb-client"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+trandb-common = { path = "../trandb-common" }
+reqwest = { version = "0.12", features = ["json"] }
+serde = { version = "1.0", features = ["derive"] }
+
+[dev-dependencies]
+mockito = "1.0"
+tokio = { version = "1.0", features = ["full"] }

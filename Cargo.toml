@@ -1,0 +1,13 @@
+[workspace]
+members = [
+    "trandb-server",
+    "trandb-client",
+    "trandb-common",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["TranDB Contributors"]
+license = "MIT OR Apache-2.0"
