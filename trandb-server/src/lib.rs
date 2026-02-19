@@ -48,10 +48,11 @@ impl Server {
         Router::new().route("/keys/:key", get(handle_get))
     }
 
-    /// Run the server
-    pub async fn run(self) -> Result<(), Box<dyn std::error::Error>> {
+    /// Run the server, signalling `ready_tx` once the port is bound and accepting connections
+    pub async fn run(self, ready_tx: tokio::sync::oneshot::Sender<()>) -> Result<(), Box<dyn std::error::Error>> {
         let app = Self::create_router();
         let listener = tokio::net::TcpListener::bind(self.config.address).await?;
+        ready_tx.send(()).ok();
         axum::serve(listener, app).await?;
         Ok(())
     }

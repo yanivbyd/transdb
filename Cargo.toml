@@ -3,6 +3,7 @@ members = [
     "trandb-server",
     "trandb-client",
     "trandb-common",
+    "trandb-integration-tests",
 ]
 resolver = "2"
 

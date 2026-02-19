@@ -1,0 +1,12 @@
+[package]
+name = "trandb-integration-tests"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dev-dependencies]
+trandb-server = { path = "../trandb-server" }
+trandb-client = { path = "../trandb-client" }
+trandb-common = { path = "../trandb-common" }
+tokio = { version = "1.0", features = ["full"] }
