@@ -41,9 +41,9 @@ Specifications are developed iteratively through collaboration:
   - By answering questions directly in the document
   - By adding comments in `<<...>>` format within the spec
 - On each iteration:
-  - Integrate user answers and comments into the appropriate sections
+  - When a user answers a question, add the answer as a section below the question — do NOT delete the question yet
   - Remove the `<<...>>` markers once addressed
-  - Remove the "Questions for Clarification" section once all answers are integrated
+  - Remove the "Questions for Clarification" section (questions and answers) only once the spec is fully finalized
 - Continue iterating until the spec is finalized
 
-**Key Principle:** Each revision should cleanly incorporate feedback so the spec remains readable without leftover questions or comment markers.
+**Key Principle:** Each revision should cleanly incorporate feedback. Questions remain visible alongside their answers until the spec is finalized.

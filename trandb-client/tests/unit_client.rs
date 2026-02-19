@@ -98,6 +98,51 @@ async fn test_get_returns_bytes_on_200() {
 }
 
 #[tokio::test]
+async fn test_get_returns_empty_bytes_on_200() {
+    let mut server = mockito::Server::new_async().await;
+    server.mock("GET", "/keys/empty_key")
+        .with_status(200)
+        .with_body(b"")
+        .create_async()
+        .await;
+
+    let client = Client::new(ClientConfig { base_url: server.url() });
+    let result = client.get("empty_key").await;
+
+    assert_eq!(result.unwrap(), b"");
+}
+
+#[tokio::test]
+async fn test_get_returns_binary_data_on_200() {
+    let binary_data: &[u8] = &[0x00, 0xFF, 0x42, 0x01, 0xDE, 0xAD];
+    let mut server = mockito::Server::new_async().await;
+    server.mock("GET", "/keys/binary_key")
+        .with_status(200)
+        .with_body(binary_data)
+        .create_async()
+        .await;
+
+    let client = Client::new(ClientConfig { base_url: server.url() });
+    let result = client.get("binary_key").await;
+
+    assert_eq!(result.unwrap(), binary_data);
+}
+
+#[tokio::test]
+async fn test_get_returns_server_error_on_503() {
+    let mut server = mockito::Server::new_async().await;
+    server.mock("GET", "/keys/some_key")
+        .with_status(503)
+        .create_async()
+        .await;
+
+    let client = Client::new(ClientConfig { base_url: server.url() });
+    let result = client.get("some_key").await;
+
+    assert!(matches!(result, Err(TranDbError::ServerError(_))));
+}
+
+#[tokio::test]
 async fn test_get_returns_server_error_on_500() {
     let mut server = mockito::Server::new_async().await;
     server.mock("GET", "/keys/some_key")
@@ -107,6 +152,34 @@ async fn test_get_returns_server_error_on_500() {
 
     let client = Client::new(ClientConfig { base_url: server.url() });
     let result = client.get("some_key").await;
+
+    assert!(matches!(result, Err(TranDbError::ServerError(_))));
+}
+
+#[tokio::test]
+async fn test_put_returns_ok_on_200() {
+    let mut server = mockito::Server::new_async().await;
+    server.mock("PUT", "/keys/my_key")
+        .with_status(200)
+        .create_async()
+        .await;
+
+    let client = Client::new(ClientConfig { base_url: server.url() });
+    let result = client.put("my_key", b"hello").await;
+
+    assert!(result.is_ok());
+}
+
+#[tokio::test]
+async fn test_put_returns_server_error_on_503() {
+    let mut server = mockito::Server::new_async().await;
+    server.mock("PUT", "/keys/my_key")
+        .with_status(503)
+        .create_async()
+        .await;
+
+    let client = Client::new(ClientConfig { base_url: server.url() });
+    let result = client.put("my_key", b"hello").await;
 
     assert!(matches!(result, Err(TranDbError::ServerError(_))));
 }

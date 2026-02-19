@@ -40,9 +40,6 @@ impl Client {
     }
 
     /// Get a value by key
-    ///
-    /// Currently always returns KeyNotFound error since the server
-    /// is not yet storing any data.
     pub async fn get(&self, key: &str) -> Result<Vec<u8>> {
         let url = self.build_key_url(key);
 
@@ -70,5 +67,28 @@ impl Client {
             .map_err(|e| TranDbError::NetworkError(e.to_string()))?;
 
         Ok(bytes.to_vec())
+    }
+
+    /// Store a value under the given key
+    pub async fn put(&self, key: &str, value: &[u8]) -> Result<()> {
+        let url = self.build_key_url(key);
+
+        let response = self
+            .http_client
+            .put(&url)
+            .header("Content-Type", "application/octet-stream")
+            .body(value.to_vec())
+            .send()
+            .await
+            .map_err(|e| TranDbError::NetworkError(e.to_string()))?;
+
+        if !response.status().is_success() {
+            return Err(TranDbError::ServerError(format!(
+                "Server returned status: {}",
+                response.status()
+            )));
+        }
+
+        Ok(())
     }
 }
