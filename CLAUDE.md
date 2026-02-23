@@ -43,7 +43,7 @@ Specifications are developed iteratively through collaboration:
 - On each iteration:
   - When a user answers a question, add the answer as a section below the question — do NOT delete the question yet
   - Remove the `<<...>>` markers once addressed
-  - Remove the "Questions for Clarification" section (questions and answers) only once the spec is fully finalized
+  - Remove the "Questions for Clarification" section (questions and answers) only once the spec is finalized
 - Continue iterating until the spec is finalized
 
 **Key Principle:** Each revision should cleanly incorporate feedback. Questions remain visible alongside their answers until the spec is finalized.
