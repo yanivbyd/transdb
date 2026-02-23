@@ -56,7 +56,7 @@ impl Server {
     /// Create the application router with the given store
     pub fn create_router(store: Store) -> Router {
         Router::new()
-            .route("/keys/:key", get(handle_get).put(handle_put))
+            .route("/keys/:key", get(handle_get).put(handle_put).delete(handle_delete))
             .with_state(store)
     }
 
@@ -100,4 +100,18 @@ pub async fn handle_put(State(store): State<Store>, Path(key): Path<String>, bod
 
     store_guard.insert(key, body.to_vec());
     StatusCode::OK.into_response()
+}
+
+/// Handler for DELETE /keys/:key — removes the key, idempotent (204 whether key existed or not)
+pub async fn handle_delete(State(store): State<Store>, Path(key): Path<String>) -> Response {
+    let mut store_guard = match timeout(LOCK_TIMEOUT, store.write()).await {
+        Ok(guard) => guard,
+        Err(_) => {
+            return (StatusCode::SERVICE_UNAVAILABLE, TranDbError::ServerError("Lock acquisition timed out".to_string()).to_string())
+                .into_response()
+        }
+    };
+
+    store_guard.remove(&key);
+    StatusCode::NO_CONTENT.into_response()
 }

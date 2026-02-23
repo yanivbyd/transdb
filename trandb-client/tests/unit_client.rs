@@ -185,6 +185,34 @@ async fn test_put_returns_server_error_on_503() {
 }
 
 #[tokio::test]
+async fn test_delete_returns_ok_on_204() {
+    let mut server = mockito::Server::new_async().await;
+    server.mock("DELETE", "/keys/my_key")
+        .with_status(204)
+        .create_async()
+        .await;
+
+    let client = Client::new(ClientConfig { base_url: server.url() });
+    let result = client.delete("my_key").await;
+
+    assert!(result.is_ok());
+}
+
+#[tokio::test]
+async fn test_delete_returns_server_error_on_503() {
+    let mut server = mockito::Server::new_async().await;
+    server.mock("DELETE", "/keys/my_key")
+        .with_status(503)
+        .create_async()
+        .await;
+
+    let client = Client::new(ClientConfig { base_url: server.url() });
+    let result = client.delete("my_key").await;
+
+    assert!(matches!(result, Err(TranDbError::ServerError(_))));
+}
+
+#[tokio::test]
 async fn test_get_returns_network_error_when_server_unreachable() {
     // Port 59210 is not bound to anything — connection will be refused immediately
     let client = Client::new(ClientConfig {

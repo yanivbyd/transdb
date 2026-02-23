@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use trandb_server::{handle_get, handle_put, Server, ServerConfig, Store};
+use trandb_server::{handle_delete, handle_get, handle_put, Server, ServerConfig, Store};
 
 fn empty_store() -> Store {
     Arc::new(RwLock::new(HashMap::new()))
@@ -88,4 +88,31 @@ async fn test_handle_get_returns_404_with_different_keys() {
         let response = handle_get(State(empty_store()), Path(key.to_string())).await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
+}
+
+#[tokio::test]
+async fn test_handle_delete_returns_204_for_existing_key() {
+    let store = store_with("my_key", b"hello").await;
+    let response = handle_delete(State(store.clone()), Path("my_key".to_string())).await;
+
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert!(store.read().await.get("my_key").is_none());
+}
+
+#[tokio::test]
+async fn test_handle_delete_returns_204_for_missing_key() {
+    let response = handle_delete(State(empty_store()), Path("missing".to_string())).await;
+
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn test_handle_delete_removes_only_specified_key() {
+    let store = store_with("key_a", b"aaa").await;
+    store.write().await.insert("key_b".to_string(), b"bbb".to_vec());
+
+    handle_delete(State(store.clone()), Path("key_a".to_string())).await;
+
+    assert!(store.read().await.get("key_a").is_none());
+    assert_eq!(store.read().await.get("key_b").unwrap(), b"bbb");
 }

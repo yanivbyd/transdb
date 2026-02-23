@@ -48,6 +48,32 @@ async fn test_put_and_get_round_trip() {
 }
 
 #[tokio::test]
+async fn test_delete_removes_existing_key() {
+    let client = start_server().await;
+
+    client.put("my_key", b"hello").await.expect("put failed");
+
+    let before = client.get("my_key").await.expect("get before delete failed");
+    assert_eq!(before, b"hello");
+
+    client.delete("my_key").await.expect("delete failed");
+
+    let after = client.get("my_key").await;
+    assert!(matches!(after, Err(TranDbError::KeyNotFound(k)) if k == "my_key"));
+}
+
+#[tokio::test]
+async fn test_delete_is_idempotent() {
+    let client = start_server().await;
+
+    let first = client.delete("nonexistent").await;
+    let second = client.delete("nonexistent").await;
+
+    assert!(first.is_ok());
+    assert!(second.is_ok());
+}
+
+#[tokio::test]
 async fn test_put_overwrites_existing_key() {
     let client = start_server().await;
 

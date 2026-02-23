@@ -91,4 +91,25 @@ impl Client {
 
         Ok(())
     }
+
+    /// Delete the value stored under the given key (idempotent)
+    pub async fn delete(&self, key: &str) -> Result<()> {
+        let url = self.build_key_url(key);
+
+        let response = self
+            .http_client
+            .delete(&url)
+            .send()
+            .await
+            .map_err(|e| TranDbError::NetworkError(e.to_string()))?;
+
+        if !response.status().is_success() {
+            return Err(TranDbError::ServerError(format!(
+                "Server returned status: {}",
+                response.status()
+            )));
+        }
+
+        Ok(())
+    }
 }
