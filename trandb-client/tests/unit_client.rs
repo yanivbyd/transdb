@@ -1,5 +1,5 @@
 use trandb_client::{Client, ClientConfig};
-use trandb_common::TranDbError;
+use trandb_common::{TranDbError, MAX_KEY_SIZE, MAX_VALUE_SIZE};
 
 #[test]
 fn test_client_config_default() {
@@ -129,7 +129,7 @@ async fn test_get_returns_binary_data_on_200() {
 }
 
 #[tokio::test]
-async fn test_get_returns_server_error_on_503() {
+async fn test_get_returns_http_error_on_503() {
     let mut server = mockito::Server::new_async().await;
     server.mock("GET", "/keys/some_key")
         .with_status(503)
@@ -139,11 +139,11 @@ async fn test_get_returns_server_error_on_503() {
     let client = Client::new(ClientConfig { base_url: server.url() });
     let result = client.get("some_key").await;
 
-    assert!(matches!(result, Err(TranDbError::ServerError(_))));
+    assert!(matches!(result, Err(TranDbError::HttpError(503, _))));
 }
 
 #[tokio::test]
-async fn test_get_returns_server_error_on_500() {
+async fn test_get_returns_http_error_on_500() {
     let mut server = mockito::Server::new_async().await;
     server.mock("GET", "/keys/some_key")
         .with_status(500)
@@ -153,7 +153,7 @@ async fn test_get_returns_server_error_on_500() {
     let client = Client::new(ClientConfig { base_url: server.url() });
     let result = client.get("some_key").await;
 
-    assert!(matches!(result, Err(TranDbError::ServerError(_))));
+    assert!(matches!(result, Err(TranDbError::HttpError(500, _))));
 }
 
 #[tokio::test]
@@ -171,7 +171,7 @@ async fn test_put_returns_ok_on_200() {
 }
 
 #[tokio::test]
-async fn test_put_returns_server_error_on_503() {
+async fn test_put_returns_http_error_on_503() {
     let mut server = mockito::Server::new_async().await;
     server.mock("PUT", "/keys/my_key")
         .with_status(503)
@@ -181,7 +181,7 @@ async fn test_put_returns_server_error_on_503() {
     let client = Client::new(ClientConfig { base_url: server.url() });
     let result = client.put("my_key", b"hello").await;
 
-    assert!(matches!(result, Err(TranDbError::ServerError(_))));
+    assert!(matches!(result, Err(TranDbError::HttpError(503, _))));
 }
 
 #[tokio::test]
@@ -199,7 +199,7 @@ async fn test_delete_returns_ok_on_204() {
 }
 
 #[tokio::test]
-async fn test_delete_returns_server_error_on_503() {
+async fn test_delete_returns_http_error_on_503() {
     let mut server = mockito::Server::new_async().await;
     server.mock("DELETE", "/keys/my_key")
         .with_status(503)
@@ -209,7 +209,7 @@ async fn test_delete_returns_server_error_on_503() {
     let client = Client::new(ClientConfig { base_url: server.url() });
     let result = client.delete("my_key").await;
 
-    assert!(matches!(result, Err(TranDbError::ServerError(_))));
+    assert!(matches!(result, Err(TranDbError::HttpError(503, _))));
 }
 
 #[tokio::test]
@@ -221,4 +221,54 @@ async fn test_get_returns_network_error_when_server_unreachable() {
     let result = client.get("any_key").await;
 
     assert!(matches!(result, Err(TranDbError::NetworkError(_))));
+}
+
+// --- Pre-flight size validation ---
+
+#[tokio::test]
+async fn test_get_rejects_oversized_key() {
+    let client = Client::with_default_config();
+    let key = "a".repeat(MAX_KEY_SIZE + 1);
+    let result = client.get(&key).await;
+    assert!(matches!(result, Err(TranDbError::KeyTooLarge(_))));
+}
+
+#[tokio::test]
+async fn test_put_rejects_oversized_key() {
+    let client = Client::with_default_config();
+    let key = "a".repeat(MAX_KEY_SIZE + 1);
+    let result = client.put(&key, b"hello").await;
+    assert!(matches!(result, Err(TranDbError::KeyTooLarge(_))));
+}
+
+#[tokio::test]
+async fn test_put_rejects_oversized_value() {
+    let client = Client::with_default_config();
+    let value = vec![0u8; MAX_VALUE_SIZE + 1];
+    let result = client.put("my_key", &value).await;
+    assert!(matches!(result, Err(TranDbError::ValueTooLarge(_))));
+}
+
+#[tokio::test]
+async fn test_delete_rejects_oversized_key() {
+    let client = Client::with_default_config();
+    let key = "a".repeat(MAX_KEY_SIZE + 1);
+    let result = client.delete(&key).await;
+    assert!(matches!(result, Err(TranDbError::KeyTooLarge(_))));
+}
+
+#[tokio::test]
+async fn test_get_parses_400_as_http_error() {
+    let mut server = mockito::Server::new_async().await;
+    server.mock("GET", "/keys/my_key")
+        .with_status(400)
+        .with_header("Content-Type", "application/json")
+        .with_body(r#"{"error": "Key exceeds maximum size of 1024 bytes"}"#)
+        .create_async()
+        .await;
+
+    let client = Client::new(ClientConfig { base_url: server.url() });
+    let result = client.get("my_key").await;
+
+    assert!(matches!(result, Err(TranDbError::HttpError(400, ref msg)) if msg == "Key exceeds maximum size of 1024 bytes"));
 }

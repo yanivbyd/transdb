@@ -23,7 +23,25 @@ fn test_network_error() {
 }
 
 #[test]
-fn test_server_error() {
-    let err = TranDbError::ServerError("internal error".to_string());
-    assert_eq!(err.to_string(), "Server error: internal error");
+fn test_http_error_5xx() {
+    let err = TranDbError::HttpError(503, "Server error: Lock acquisition timed out".to_string());
+    assert_eq!(err.to_string(), "HTTP 503: Server error: Lock acquisition timed out");
+}
+
+#[test]
+fn test_key_too_large() {
+    let err = TranDbError::KeyTooLarge(1024);
+    assert_eq!(err.to_string(), "Key exceeds maximum size of 1024 bytes");
+}
+
+#[test]
+fn test_value_too_large() {
+    let err = TranDbError::ValueTooLarge(4194304);
+    assert_eq!(err.to_string(), "Value exceeds maximum size of 4194304 bytes");
+}
+
+#[test]
+fn test_http_error() {
+    let err = TranDbError::HttpError(400, "Key exceeds maximum size of 1024 bytes".to_string());
+    assert_eq!(err.to_string(), "HTTP 400: Key exceeds maximum size of 1024 bytes");
 }

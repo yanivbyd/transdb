@@ -1,10 +1,10 @@
 use axum::{
     body::Bytes,
-    extract::{Path, State},
+    extract::{DefaultBodyLimit, Path, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::get,
-    Router,
+    Json, Router,
 };
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
 use tokio::time::timeout;
-use trandb_common::TranDbError;
+use trandb_common::{ErrorResponse, MAX_KEY_SIZE, MAX_VALUE_SIZE};
 
 pub type Store = Arc<RwLock<HashMap<String, Vec<u8>>>>;
 
@@ -57,6 +57,9 @@ impl Server {
     pub fn create_router(store: Store) -> Router {
         Router::new()
             .route("/keys/:key", get(handle_get).put(handle_put).delete(handle_delete))
+            // Allow bodies up to MAX_VALUE_SIZE + 1 so our handler can validate and return 400;
+            // axum's default 2MB limit would otherwise return 413 for oversized values.
+            .layer(DefaultBodyLimit::max(MAX_VALUE_SIZE + 1))
             .with_state(store)
     }
 
@@ -72,30 +75,48 @@ impl Server {
     }
 }
 
+fn error_response(status: StatusCode, message: impl Into<String>) -> Response {
+    (status, Json(ErrorResponse { error: message.into() })).into_response()
+}
+
 /// Handler for GET /keys/:key — returns the value if found, 404 if not
 pub async fn handle_get(State(store): State<Store>, Path(key): Path<String>) -> Response {
+    if key.len() > MAX_KEY_SIZE {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            format!("Key exceeds maximum size of {} bytes", MAX_KEY_SIZE),
+        );
+    }
+
     let store_guard = match timeout(LOCK_TIMEOUT, store.read()).await {
         Ok(guard) => guard,
-        Err(_) => {
-            return (StatusCode::SERVICE_UNAVAILABLE, TranDbError::ServerError("Lock acquisition timed out".to_string()).to_string())
-                .into_response()
-        }
+        Err(_) => return error_response(StatusCode::SERVICE_UNAVAILABLE, "Server error: Lock acquisition timed out"),
     };
 
     match store_guard.get(&key) {
         Some(value) => (StatusCode::OK, value.clone()).into_response(),
-        None => (StatusCode::NOT_FOUND, TranDbError::KeyNotFound(key).to_string()).into_response(),
+        None => error_response(StatusCode::NOT_FOUND, format!("Key not found: {}", key)),
     }
 }
 
 /// Handler for PUT /keys/:key — stores the request body as the value
 pub async fn handle_put(State(store): State<Store>, Path(key): Path<String>, body: Bytes) -> Response {
+    if key.len() > MAX_KEY_SIZE {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            format!("Key exceeds maximum size of {} bytes", MAX_KEY_SIZE),
+        );
+    }
+    if body.len() > MAX_VALUE_SIZE {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            format!("Value exceeds maximum size of {} bytes", MAX_VALUE_SIZE),
+        );
+    }
+
     let mut store_guard = match timeout(LOCK_TIMEOUT, store.write()).await {
         Ok(guard) => guard,
-        Err(_) => {
-            return (StatusCode::SERVICE_UNAVAILABLE, TranDbError::ServerError("Lock acquisition timed out".to_string()).to_string())
-                .into_response()
-        }
+        Err(_) => return error_response(StatusCode::SERVICE_UNAVAILABLE, "Server error: Lock acquisition timed out"),
     };
 
     store_guard.insert(key, body.to_vec());
@@ -104,12 +125,16 @@ pub async fn handle_put(State(store): State<Store>, Path(key): Path<String>, bod
 
 /// Handler for DELETE /keys/:key — removes the key, idempotent (204 whether key existed or not)
 pub async fn handle_delete(State(store): State<Store>, Path(key): Path<String>) -> Response {
+    if key.len() > MAX_KEY_SIZE {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            format!("Key exceeds maximum size of {} bytes", MAX_KEY_SIZE),
+        );
+    }
+
     let mut store_guard = match timeout(LOCK_TIMEOUT, store.write()).await {
         Ok(guard) => guard,
-        Err(_) => {
-            return (StatusCode::SERVICE_UNAVAILABLE, TranDbError::ServerError("Lock acquisition timed out".to_string()).to_string())
-                .into_response()
-        }
+        Err(_) => return error_response(StatusCode::SERVICE_UNAVAILABLE, "Server error: Lock acquisition timed out"),
     };
 
     store_guard.remove(&key);

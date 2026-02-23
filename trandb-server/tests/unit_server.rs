@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use trandb_common::{MAX_KEY_SIZE, MAX_VALUE_SIZE};
 use trandb_server::{handle_delete, handle_get, handle_put, Server, ServerConfig, Store};
 
 fn empty_store() -> Store {
@@ -115,4 +116,65 @@ async fn test_handle_delete_removes_only_specified_key() {
 
     assert!(store.read().await.get("key_a").is_none());
     assert_eq!(store.read().await.get("key_b").unwrap(), b"bbb");
+}
+
+// --- Key size validation ---
+
+#[tokio::test]
+async fn test_handle_get_rejects_key_over_limit() {
+    let key = "a".repeat(MAX_KEY_SIZE + 1);
+    let response = handle_get(State(empty_store()), Path(key)).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_handle_get_accepts_key_at_limit() {
+    let key = "a".repeat(MAX_KEY_SIZE);
+    let response = handle_get(State(empty_store()), Path(key)).await;
+    // Key doesn't exist but size is valid — expect 404, not 400
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_handle_put_rejects_key_over_limit() {
+    let key = "a".repeat(MAX_KEY_SIZE + 1);
+    let body = axum::body::Bytes::from("hello");
+    let response = handle_put(State(empty_store()), Path(key), body).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_handle_put_accepts_key_at_limit() {
+    let key = "a".repeat(MAX_KEY_SIZE);
+    let body = axum::body::Bytes::from("hello");
+    let response = handle_put(State(empty_store()), Path(key), body).await;
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_handle_put_rejects_value_over_limit() {
+    let body = axum::body::Bytes::from(vec![0u8; MAX_VALUE_SIZE + 1]);
+    let response = handle_put(State(empty_store()), Path("my_key".to_string()), body).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_handle_put_accepts_value_at_limit() {
+    let body = axum::body::Bytes::from(vec![0u8; MAX_VALUE_SIZE]);
+    let response = handle_put(State(empty_store()), Path("my_key".to_string()), body).await;
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_handle_delete_rejects_key_over_limit() {
+    let key = "a".repeat(MAX_KEY_SIZE + 1);
+    let response = handle_delete(State(empty_store()), Path(key)).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_handle_delete_accepts_key_at_limit() {
+    let key = "a".repeat(MAX_KEY_SIZE);
+    let response = handle_delete(State(empty_store()), Path(key)).await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
 }
