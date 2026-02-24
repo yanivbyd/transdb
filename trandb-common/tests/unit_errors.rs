@@ -45,3 +45,9 @@ fn test_http_error() {
     let err = TranDbError::HttpError(400, "Key exceeds maximum size of 1024 bytes".to_string());
     assert_eq!(err.to_string(), "HTTP 400: Key exceeds maximum size of 1024 bytes");
 }
+
+#[test]
+fn test_missing_etag() {
+    let err = TranDbError::MissingETag;
+    assert_eq!(err.to_string(), "Server response missing ETag header");
+}

@@ -9,6 +9,7 @@ license.workspace = true
 trandb-common = { path = "../trandb-common" }
 reqwest = { version = "0.12", features = ["json"] }
 serde = { version = "1.0", features = ["derive"] }
+uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 mockito = "1.0"

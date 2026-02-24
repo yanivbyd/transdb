@@ -87,6 +87,7 @@ async fn test_get_returns_bytes_on_200() {
     let mut server = mockito::Server::new_async().await;
     server.mock("GET", "/keys/my_key")
         .with_status(200)
+        .with_header("ETag", "\"1\"")
         .with_body(b"hello")
         .create_async()
         .await;
@@ -94,7 +95,53 @@ async fn test_get_returns_bytes_on_200() {
     let client = Client::new(ClientConfig { base_url: server.url() });
     let result = client.get("my_key").await;
 
-    assert_eq!(result.unwrap(), b"hello");
+    assert_eq!(result.unwrap().value, b"hello");
+}
+
+#[tokio::test]
+async fn test_get_returns_version_from_etag() {
+    let mut server = mockito::Server::new_async().await;
+    server.mock("GET", "/keys/my_key")
+        .with_status(200)
+        .with_header("ETag", "\"5\"")
+        .with_body(b"hello")
+        .create_async()
+        .await;
+
+    let client = Client::new(ClientConfig { base_url: server.url() });
+    let result = client.get("my_key").await.unwrap();
+
+    assert_eq!(result.version, 5);
+    assert_eq!(result.value, b"hello");
+}
+
+#[tokio::test]
+async fn test_get_returns_missing_etag_error_when_etag_absent() {
+    let mut server = mockito::Server::new_async().await;
+    server.mock("GET", "/keys/my_key")
+        .with_status(200)
+        .with_body(b"hello")
+        .create_async()
+        .await;
+
+    let client = Client::new(ClientConfig { base_url: server.url() });
+    let result = client.get("my_key").await;
+
+    assert!(matches!(result, Err(TranDbError::MissingETag)));
+}
+
+#[tokio::test]
+async fn test_put_returns_missing_etag_error_when_etag_absent() {
+    let mut server = mockito::Server::new_async().await;
+    server.mock("PUT", "/keys/my_key")
+        .with_status(200)
+        .create_async()
+        .await;
+
+    let client = Client::new(ClientConfig { base_url: server.url() });
+    let result = client.put("my_key", b"hello").await;
+
+    assert!(matches!(result, Err(TranDbError::MissingETag)));
 }
 
 #[tokio::test]
@@ -102,6 +149,7 @@ async fn test_get_returns_empty_bytes_on_200() {
     let mut server = mockito::Server::new_async().await;
     server.mock("GET", "/keys/empty_key")
         .with_status(200)
+        .with_header("ETag", "\"1\"")
         .with_body(b"")
         .create_async()
         .await;
@@ -109,7 +157,7 @@ async fn test_get_returns_empty_bytes_on_200() {
     let client = Client::new(ClientConfig { base_url: server.url() });
     let result = client.get("empty_key").await;
 
-    assert_eq!(result.unwrap(), b"");
+    assert_eq!(result.unwrap().value, b"");
 }
 
 #[tokio::test]
@@ -118,6 +166,7 @@ async fn test_get_returns_binary_data_on_200() {
     let mut server = mockito::Server::new_async().await;
     server.mock("GET", "/keys/binary_key")
         .with_status(200)
+        .with_header("ETag", "\"1\"")
         .with_body(binary_data)
         .create_async()
         .await;
@@ -125,7 +174,7 @@ async fn test_get_returns_binary_data_on_200() {
     let client = Client::new(ClientConfig { base_url: server.url() });
     let result = client.get("binary_key").await;
 
-    assert_eq!(result.unwrap(), binary_data);
+    assert_eq!(result.unwrap().value, binary_data);
 }
 
 #[tokio::test]
@@ -161,6 +210,7 @@ async fn test_put_returns_ok_on_200() {
     let mut server = mockito::Server::new_async().await;
     server.mock("PUT", "/keys/my_key")
         .with_status(200)
+        .with_header("ETag", "\"1\"")
         .create_async()
         .await;
 
@@ -168,6 +218,21 @@ async fn test_put_returns_ok_on_200() {
     let result = client.put("my_key", b"hello").await;
 
     assert!(result.is_ok());
+}
+
+#[tokio::test]
+async fn test_put_returns_version_from_etag() {
+    let mut server = mockito::Server::new_async().await;
+    server.mock("PUT", "/keys/my_key")
+        .with_status(200)
+        .with_header("ETag", "\"3\"")
+        .create_async()
+        .await;
+
+    let client = Client::new(ClientConfig { base_url: server.url() });
+    let version = client.put("my_key", b"hello").await.unwrap();
+
+    assert_eq!(version, 3);
 }
 
 #[tokio::test]

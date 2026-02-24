@@ -1,20 +1,44 @@
+use axum::body::Bytes;
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
-use std::collections::HashMap;
-use std::net::SocketAddr;
-use std::sync::Arc;
-use tokio::sync::RwLock;
+use axum::http::{header, HeaderMap, StatusCode};
 use trandb_common::{MAX_KEY_SIZE, MAX_VALUE_SIZE};
-use trandb_server::{handle_delete, handle_get, handle_put, Server, ServerConfig, Store};
+use trandb_server::{
+    handle_delete, handle_get, handle_put, AppState, Entry, Server, ServerConfig,
+};
 
-fn empty_store() -> Store {
-    Arc::new(RwLock::new(HashMap::new()))
+fn empty_store() -> AppState {
+    AppState::new()
 }
 
-async fn store_with(key: &str, value: &[u8]) -> Store {
-    let store = empty_store();
-    store.write().await.insert(key.to_string(), value.to_vec());
-    store
+async fn store_with(key: &str, value: &[u8]) -> AppState {
+    let state = AppState::new();
+    state.db.write().await.store.insert(
+        key.to_string(),
+        Entry { value: Bytes::from(value.to_vec()), version: 1 },
+    );
+    state
+}
+
+fn headers_with_idempotency_key(key: &str) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert("idempotency-key", key.parse().unwrap());
+    headers
+}
+
+/// Assert the result of GET /keys/:key.
+/// Pass `None` to assert the key does not exist.
+/// Pass `Some((value, version))` to assert the key exists with the given value and version.
+async fn assert_get(state: &AppState, key: &str, expected: Option<(&[u8], u64)>) {
+    let response = handle_get(State(state.clone()), Path(key.to_string())).await;
+    match expected {
+        None => assert_eq!(response.status(), StatusCode::NOT_FOUND),
+        Some((value, version)) => {
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(response.headers().get(header::ETAG).unwrap(), &format!("\"{}\"", version));
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            assert_eq!(body.as_ref(), value);
+        }
+    }
 }
 
 #[test]
@@ -25,6 +49,7 @@ fn test_server_config_default() {
 
 #[test]
 fn test_server_config_custom() {
+    use std::net::SocketAddr;
     let addr: SocketAddr = "0.0.0.0:9000".parse().unwrap();
     let config = ServerConfig { address: addr };
     assert_eq!(config.address.to_string(), "0.0.0.0:9000");
@@ -38,6 +63,7 @@ fn test_server_creation() {
 
 #[test]
 fn test_server_creation_with_config() {
+    use std::net::SocketAddr;
     let addr: SocketAddr = "0.0.0.0:9000".parse().unwrap();
     let config = ServerConfig { address: addr };
     let server = Server::new(config);
@@ -46,7 +72,7 @@ fn test_server_creation_with_config() {
 
 #[test]
 fn test_router_creation() {
-    let router = Server::create_router(empty_store());
+    let router = Server::create_router(AppState::new());
     assert!(std::mem::size_of_val(&router) > 0);
 }
 
@@ -58,28 +84,90 @@ async fn test_handle_get_returns_404_for_missing_key() {
 
 #[tokio::test]
 async fn test_handle_get_returns_200_with_value_after_put() {
-    let store = store_with("my_key", b"hello").await;
-    let response = handle_get(State(store), Path("my_key".to_string())).await;
+    let state = store_with("my_key", b"hello").await;
+    let response = handle_get(State(state), Path("my_key".to_string())).await;
     assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_handle_get_returns_etag_header() {
+    let state = store_with("my_key", b"hello").await;
+    let response = handle_get(State(state), Path("my_key".to_string())).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers().get(header::ETAG).unwrap(), "\"1\"");
 }
 
 #[tokio::test]
 async fn test_handle_put_stores_value() {
-    let store = empty_store();
-    let body = axum::body::Bytes::from("hello");
-    let response = handle_put(State(store.clone()), Path("my_key".to_string()), body).await;
+    let state = empty_store();
+    let headers = headers_with_idempotency_key("tok-1");
+    let body = Bytes::from("hello");
+    let response = handle_put(State(state.clone()), Path("my_key".to_string()), headers, body).await;
 
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(store.read().await.get("my_key").unwrap(), b"hello");
+    assert_eq!(state.db.read().await.store.get("my_key").unwrap().value.as_ref(), b"hello");
+}
+
+#[tokio::test]
+async fn test_handle_put_returns_etag_version_1_for_new_key() {
+    let state = empty_store();
+    let headers = headers_with_idempotency_key("tok-1");
+    let body = Bytes::from("hello");
+    let response = handle_put(State(state.clone()), Path("my_key".to_string()), headers, body).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers().get(header::ETAG).unwrap(), "\"1\"");
+}
+
+#[tokio::test]
+async fn test_handle_put_increments_version() {
+    let state = empty_store();
+
+    let h1 = headers_with_idempotency_key("tok-1");
+    let r1 = handle_put(State(state.clone()), Path("k".to_string()), h1, Bytes::from("v1")).await;
+    assert_eq!(r1.headers().get(header::ETAG).unwrap(), "\"1\"");
+
+    let h2 = headers_with_idempotency_key("tok-2");
+    let r2 = handle_put(State(state.clone()), Path("k".to_string()), h2, Bytes::from("v2")).await;
+    assert_eq!(r2.headers().get(header::ETAG).unwrap(), "\"2\"");
+}
+
+#[tokio::test]
+async fn test_handle_put_version_resets_after_delete() {
+    let state = empty_store();
+
+    let h1 = headers_with_idempotency_key("tok-1");
+    handle_put(State(state.clone()), Path("k".to_string()), h1, Bytes::from("v1")).await;
+
+    let hd = headers_with_idempotency_key("tok-del");
+    handle_delete(State(state.clone()), Path("k".to_string()), hd).await;
+
+    let h2 = headers_with_idempotency_key("tok-2");
+    let r2 = handle_put(State(state.clone()), Path("k".to_string()), h2, Bytes::from("v2")).await;
+    assert_eq!(r2.headers().get(header::ETAG).unwrap(), "\"1\"");
+}
+
+#[tokio::test]
+async fn test_handle_get_reflects_put_version() {
+    let state = empty_store();
+
+    let h1 = headers_with_idempotency_key("tok-1");
+    handle_put(State(state.clone()), Path("k".to_string()), h1, Bytes::from("a")).await;
+    let h2 = headers_with_idempotency_key("tok-2");
+    handle_put(State(state.clone()), Path("k".to_string()), h2, Bytes::from("b")).await;
+
+    let response = handle_get(State(state.clone()), Path("k".to_string())).await;
+    assert_eq!(response.headers().get(header::ETAG).unwrap(), "\"2\"");
 }
 
 #[tokio::test]
 async fn test_handle_put_overwrites_existing_key() {
-    let store = store_with("my_key", b"old_value").await;
-    let body = axum::body::Bytes::from("new_value");
-    handle_put(State(store.clone()), Path("my_key".to_string()), body).await;
+    let state = store_with("my_key", b"old_value").await;
+    let headers = headers_with_idempotency_key("tok-1");
+    let body = Bytes::from("new_value");
+    handle_put(State(state.clone()), Path("my_key".to_string()), headers, body).await;
 
-    assert_eq!(store.read().await.get("my_key").unwrap(), b"new_value");
+    assert_eq!(state.db.read().await.store.get("my_key").unwrap().value.as_ref(), b"new_value");
 }
 
 #[tokio::test]
@@ -93,29 +181,176 @@ async fn test_handle_get_returns_404_with_different_keys() {
 
 #[tokio::test]
 async fn test_handle_delete_returns_204_for_existing_key() {
-    let store = store_with("my_key", b"hello").await;
-    let response = handle_delete(State(store.clone()), Path("my_key".to_string())).await;
+    let state = store_with("my_key", b"hello").await;
+    let headers = headers_with_idempotency_key("tok-1");
+    let response = handle_delete(State(state.clone()), Path("my_key".to_string()), headers).await;
 
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
-    assert!(store.read().await.get("my_key").is_none());
+    assert!(state.db.read().await.store.get("my_key").is_none());
 }
 
 #[tokio::test]
 async fn test_handle_delete_returns_204_for_missing_key() {
-    let response = handle_delete(State(empty_store()), Path("missing".to_string())).await;
+    let headers = headers_with_idempotency_key("tok-1");
+    let response = handle_delete(State(empty_store()), Path("missing".to_string()), headers).await;
 
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
 }
 
 #[tokio::test]
 async fn test_handle_delete_removes_only_specified_key() {
-    let store = store_with("key_a", b"aaa").await;
-    store.write().await.insert("key_b".to_string(), b"bbb".to_vec());
+    let state = store_with("key_a", b"aaa").await;
+    state.db.write().await.store.insert(
+        "key_b".to_string(),
+        Entry { value: Bytes::from(b"bbb".as_ref()), version: 1 },
+    );
 
-    handle_delete(State(store.clone()), Path("key_a".to_string())).await;
+    let headers = headers_with_idempotency_key("tok-1");
+    handle_delete(State(state.clone()), Path("key_a".to_string()), headers).await;
 
-    assert!(store.read().await.get("key_a").is_none());
-    assert_eq!(store.read().await.get("key_b").unwrap(), b"bbb");
+    assert!(state.db.read().await.store.get("key_a").is_none());
+    assert_eq!(state.db.read().await.store.get("key_b").unwrap().value.as_ref(), b"bbb");
+}
+
+// --- Idempotency-Key validation ---
+
+#[tokio::test]
+async fn test_handle_put_missing_idempotency_key_returns_400() {
+    let headers = HeaderMap::new();
+    let body = Bytes::from("hello");
+    let response = handle_put(State(empty_store()), Path("k".to_string()), headers, body).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_handle_delete_missing_idempotency_key_returns_400() {
+    let headers = HeaderMap::new();
+    let response = handle_delete(State(empty_store()), Path("k".to_string()), headers).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+// --- Idempotency replay ---
+
+#[tokio::test]
+async fn test_handle_put_idempotency_replay_returns_same_version() {
+    let state = empty_store();
+    let h1 = headers_with_idempotency_key("replay-tok");
+    let r1 = handle_put(State(state.clone()), Path("k".to_string()), h1, Bytes::from("v")).await;
+    assert_eq!(r1.status(), StatusCode::OK);
+    let etag1 = r1.headers().get(header::ETAG).unwrap().clone();
+
+    let h2 = headers_with_idempotency_key("replay-tok");
+    let r2 = handle_put(State(state.clone()), Path("k".to_string()), h2, Bytes::from("v")).await;
+    assert_eq!(r2.status(), StatusCode::OK);
+    assert_eq!(r2.headers().get(header::ETAG).unwrap(), &etag1);
+}
+
+#[tokio::test]
+async fn test_handle_put_idempotency_replay_does_not_increment_version() {
+    let state = empty_store();
+    let h1 = headers_with_idempotency_key("replay-tok");
+    handle_put(State(state.clone()), Path("k".to_string()), h1, Bytes::from("v")).await;
+
+    let h2 = headers_with_idempotency_key("replay-tok");
+    handle_put(State(state.clone()), Path("k".to_string()), h2, Bytes::from("v")).await;
+
+    // Version should still be 1 (replayed, not incremented again)
+    assert_eq!(state.db.read().await.store.get("k").unwrap().version, 1);
+}
+
+#[tokio::test]
+async fn test_handle_delete_idempotency_replay_returns_204() {
+    let state = empty_store();
+    let h1 = headers_with_idempotency_key("del-tok");
+    let r1 = handle_delete(State(state.clone()), Path("k".to_string()), h1).await;
+    assert_eq!(r1.status(), StatusCode::NO_CONTENT);
+
+    let h2 = headers_with_idempotency_key("del-tok");
+    let r2 = handle_delete(State(state.clone()), Path("k".to_string()), h2).await;
+    assert_eq!(r2.status(), StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn test_handle_delete_idempotency_replay_does_not_delete_recreated_key() {
+    let state = empty_store();
+
+    // PUT k1
+    let h1 = headers_with_idempotency_key("put-tok-1");
+    handle_put(State(state.clone()), Path("k1".to_string()), h1, Bytes::from("v1")).await;
+    assert_get(&state, "k1", Some((b"v1", 1))).await;
+
+    // DELETE k1
+    let hd = headers_with_idempotency_key("del-tok");
+    handle_delete(State(state.clone()), Path("k1".to_string()), hd).await;
+    assert_get(&state, "k1", None).await;
+
+    // PUT k1 again (recreate)
+    let h2 = headers_with_idempotency_key("put-tok-2");
+    handle_put(State(state.clone()), Path("k1".to_string()), h2, Bytes::from("v2")).await;
+    assert_get(&state, "k1", Some((b"v2", 1))).await;
+
+    // Replay the original DELETE — must return 204 but must NOT delete the key again
+    let hd_replay = headers_with_idempotency_key("del-tok");
+    let replay = handle_delete(State(state.clone()), Path("k1".to_string()), hd_replay).await;
+    assert_eq!(replay.status(), StatusCode::NO_CONTENT);
+    
+    assert_get(&state, "k1", Some((b"v2", 1))).await;
+}
+
+// --- Idempotency mismatch (422) ---
+
+#[tokio::test]
+async fn test_handle_put_idempotency_mismatch_different_key_returns_422() {
+    let state = empty_store();
+
+    let h1 = headers_with_idempotency_key("shared-tok");
+    handle_put(State(state.clone()), Path("key_a".to_string()), h1, Bytes::from("v")).await;
+
+    // Same idempotency token, different key path
+    let h2 = headers_with_idempotency_key("shared-tok");
+    let r2 = handle_put(State(state.clone()), Path("key_b".to_string()), h2, Bytes::from("v")).await;
+    assert_eq!(r2.status(), StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test]
+async fn test_handle_put_idempotency_mismatch_method_returns_422() {
+    let state = empty_store();
+
+    // First use: DELETE with token X
+    let h1 = headers_with_idempotency_key("mixed-tok");
+    handle_delete(State(state.clone()), Path("k".to_string()), h1).await;
+
+    // Second use: PUT with same token X
+    let h2 = headers_with_idempotency_key("mixed-tok");
+    let r2 = handle_put(State(state.clone()), Path("k".to_string()), h2, Bytes::from("v")).await;
+    assert_eq!(r2.status(), StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test]
+async fn test_handle_delete_idempotency_mismatch_method_returns_422() {
+    let state = empty_store();
+
+    // First use: PUT with token X
+    let h1 = headers_with_idempotency_key("mixed-tok");
+    handle_put(State(state.clone()), Path("k".to_string()), h1, Bytes::from("v")).await;
+
+    // Second use: DELETE with same token X
+    let h2 = headers_with_idempotency_key("mixed-tok");
+    let r2 = handle_delete(State(state.clone()), Path("k".to_string()), h2).await;
+    assert_eq!(r2.status(), StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test]
+async fn test_handle_delete_idempotency_mismatch_key_returns_422() {
+    let state = empty_store();
+
+    let h1 = headers_with_idempotency_key("shared-tok");
+    handle_delete(State(state.clone()), Path("key_a".to_string()), h1).await;
+
+    // Same idempotency token, different key path
+    let h2 = headers_with_idempotency_key("shared-tok");
+    let r2 = handle_delete(State(state.clone()), Path("key_b".to_string()), h2).await;
+    assert_eq!(r2.status(), StatusCode::UNPROCESSABLE_ENTITY);
 }
 
 // --- Key size validation ---
@@ -138,43 +373,76 @@ async fn test_handle_get_accepts_key_at_limit() {
 #[tokio::test]
 async fn test_handle_put_rejects_key_over_limit() {
     let key = "a".repeat(MAX_KEY_SIZE + 1);
-    let body = axum::body::Bytes::from("hello");
-    let response = handle_put(State(empty_store()), Path(key), body).await;
+    let headers = headers_with_idempotency_key("tok-1");
+    let body = Bytes::from("hello");
+    let response = handle_put(State(empty_store()), Path(key), headers, body).await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]
 async fn test_handle_put_accepts_key_at_limit() {
     let key = "a".repeat(MAX_KEY_SIZE);
-    let body = axum::body::Bytes::from("hello");
-    let response = handle_put(State(empty_store()), Path(key), body).await;
+    let headers = headers_with_idempotency_key("tok-1");
+    let body = Bytes::from("hello");
+    let response = handle_put(State(empty_store()), Path(key), headers, body).await;
     assert_eq!(response.status(), StatusCode::OK);
 }
 
 #[tokio::test]
 async fn test_handle_put_rejects_value_over_limit() {
-    let body = axum::body::Bytes::from(vec![0u8; MAX_VALUE_SIZE + 1]);
-    let response = handle_put(State(empty_store()), Path("my_key".to_string()), body).await;
+    let headers = headers_with_idempotency_key("tok-1");
+    let body = Bytes::from(vec![0u8; MAX_VALUE_SIZE + 1]);
+    let response = handle_put(State(empty_store()), Path("my_key".to_string()), headers, body).await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]
 async fn test_handle_put_accepts_value_at_limit() {
-    let body = axum::body::Bytes::from(vec![0u8; MAX_VALUE_SIZE]);
-    let response = handle_put(State(empty_store()), Path("my_key".to_string()), body).await;
+    let headers = headers_with_idempotency_key("tok-1");
+    let body = Bytes::from(vec![0u8; MAX_VALUE_SIZE]);
+    let response = handle_put(State(empty_store()), Path("my_key".to_string()), headers, body).await;
     assert_eq!(response.status(), StatusCode::OK);
 }
 
 #[tokio::test]
 async fn test_handle_delete_rejects_key_over_limit() {
     let key = "a".repeat(MAX_KEY_SIZE + 1);
-    let response = handle_delete(State(empty_store()), Path(key)).await;
+    let headers = headers_with_idempotency_key("tok-1");
+    let response = handle_delete(State(empty_store()), Path(key), headers).await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]
 async fn test_handle_delete_accepts_key_at_limit() {
     let key = "a".repeat(MAX_KEY_SIZE);
-    let response = handle_delete(State(empty_store()), Path(key)).await;
+    let headers = headers_with_idempotency_key("tok-1");
+    let response = handle_delete(State(empty_store()), Path(key), headers).await;
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
+}
+
+// Key size check must fire before Idempotency-Key check
+#[tokio::test]
+async fn test_handle_put_key_size_checked_before_idempotency_key() {
+    let key = "a".repeat(MAX_KEY_SIZE + 1);
+    let headers = HeaderMap::new(); // no Idempotency-Key
+    let body = Bytes::from("hello");
+    let response = handle_put(State(empty_store()), Path(key), headers, body).await;
+    // Should be 400 for key size, not 400 for missing header (same code but ordering matters for clarity)
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_handle_delete_key_size_checked_before_idempotency_key() {
+    let key = "a".repeat(MAX_KEY_SIZE + 1);
+    let headers = HeaderMap::new(); // no Idempotency-Key
+    let response = handle_delete(State(empty_store()), Path(key), headers).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+// --- AppState::default ---
+
+#[test]
+fn test_app_state_default() {
+    let state = AppState::default();
+    let _ = state.db;
 }

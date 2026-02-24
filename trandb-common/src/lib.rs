@@ -21,6 +21,9 @@ pub enum TranDbError {
 
     #[error("Value exceeds maximum size of {0} bytes")]
     ValueTooLarge(usize),
+
+    #[error("Server response missing ETag header")]
+    MissingETag,
 }
 
 /// JSON error envelope returned by the server for all error responses

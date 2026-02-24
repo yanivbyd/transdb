@@ -1,4 +1,5 @@
 use trandb_common::{ErrorResponse, Result, TranDbError, MAX_KEY_SIZE, MAX_VALUE_SIZE};
+use uuid::Uuid;
 
 /// TranDB client configuration
 #[derive(Debug, Clone)]
@@ -12,6 +13,13 @@ impl Default for ClientConfig {
             base_url: "http://127.0.0.1:8080".to_string(),
         }
     }
+}
+
+/// Result returned by a successful GET
+#[derive(Debug, Clone, PartialEq)]
+pub struct GetResult {
+    pub value: Vec<u8>,
+    pub version: u64,
 }
 
 /// TranDB Client
@@ -39,8 +47,8 @@ impl Client {
         format!("{}/keys/{}", self.config.base_url, key)
     }
 
-    /// Get a value by key
-    pub async fn get(&self, key: &str) -> Result<Vec<u8>> {
+    /// Get a value by key; returns the value bytes and the current version
+    pub async fn get(&self, key: &str) -> Result<GetResult> {
         if key.len() > MAX_KEY_SIZE {
             return Err(TranDbError::KeyTooLarge(MAX_KEY_SIZE));
         }
@@ -59,16 +67,18 @@ impl Client {
             return Err(parse_error_response(status, key, response).await);
         }
 
+        let version = parse_etag(&response).ok_or(TranDbError::MissingETag)?;
+
         let bytes = response
             .bytes()
             .await
             .map_err(|e| TranDbError::NetworkError(e.to_string()))?;
 
-        Ok(bytes.to_vec())
+        Ok(GetResult { value: bytes.to_vec(), version })
     }
 
-    /// Store a value under the given key
-    pub async fn put(&self, key: &str, value: &[u8]) -> Result<()> {
+    /// Store a value under the given key; returns the version assigned by this write
+    pub async fn put(&self, key: &str, value: &[u8]) -> Result<u64> {
         if key.len() > MAX_KEY_SIZE {
             return Err(TranDbError::KeyTooLarge(MAX_KEY_SIZE));
         }
@@ -82,6 +92,7 @@ impl Client {
             .http_client
             .put(&url)
             .header("Content-Type", "application/octet-stream")
+            .header("Idempotency-Key", Uuid::new_v4().to_string())
             .body(value.to_vec())
             .send()
             .await
@@ -92,7 +103,7 @@ impl Client {
             return Err(parse_error_response(status, key, response).await);
         }
 
-        Ok(())
+        parse_etag(&response).ok_or(TranDbError::MissingETag)
     }
 
     /// Delete the value stored under the given key (idempotent)
@@ -106,6 +117,7 @@ impl Client {
         let response = self
             .http_client
             .delete(&url)
+            .header("Idempotency-Key", Uuid::new_v4().to_string())
             .send()
             .await
             .map_err(|e| TranDbError::NetworkError(e.to_string()))?;
@@ -117,6 +129,16 @@ impl Client {
 
         Ok(())
     }
+}
+
+/// Parse the ETag header as a `u64` version; returns `None` if absent or unparseable.
+fn parse_etag(response: &reqwest::Response) -> Option<u64> {
+    response
+        .headers()
+        .get("etag")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.trim_matches('"'))
+        .and_then(|s| s.parse::<u64>().ok())
 }
 
 async fn parse_error_response(
