@@ -32,9 +32,8 @@ async fn start_server() -> Client {
 async fn test_get_returns_key_not_found() {
     let client = start_server().await;
 
-    let result = client.get("some_key").await;
-
-    assert!(matches!(result, Err(TranDbError::KeyNotFound(k)) if k == "some_key"));
+    assert!(matches!(client.get("some_key").await, Err(TranDbError::KeyNotFound(_))));
+    assert!(matches!(client.get_allowing_expired("some_key").await, Err(TranDbError::KeyNotFound(_))));
 }
 
 #[tokio::test]
@@ -47,6 +46,12 @@ async fn test_put_and_get_round_trip() {
     let result = client.get("my_key").await.expect("get failed");
     assert_eq!(result.value, b"hello world");
     assert_eq!(result.version, 1);
+    assert!(!result.expired);
+
+    let result = client.get_allowing_expired("my_key").await.expect("get_allowing_expired failed");
+    assert_eq!(result.value, b"hello world");
+    assert_eq!(result.version, 1);
+    assert!(!result.expired);
 }
 
 #[tokio::test]
@@ -358,4 +363,58 @@ async fn test_client_rejects_oversized_value_without_contacting_server() {
 
     // Must be ValueTooLarge (pre-flight), not NetworkError (would mean a connection was attempted)
     assert!(matches!(result, Err(TranDbError::ValueTooLarge(_))));
+}
+
+// --- TTL ---
+
+#[tokio::test]
+async fn test_expired_entry_behavior() {
+    let client = start_server().await;
+
+    // Epoch 1 is well in the past — entry is immediately expired
+    let version = client.put_with_ttl("ttl_key", b"stale value", 1).await.expect("put_with_ttl failed");
+    assert_eq!(version, 1);
+
+    // Strong guarantee: expired entry is treated as not found
+    assert!(matches!(client.get("ttl_key").await, Err(TranDbError::KeyNotFound(_))));
+
+    // Soft guarantee: expired entry is returned with expired=true
+    let result = client.get_allowing_expired("ttl_key").await.expect("get_allowing_expired failed");
+    assert_eq!(result.value, b"stale value");
+    assert!(result.expired);
+}
+
+#[tokio::test]
+async fn test_get_returns_ok_for_entry_with_future_ttl() {
+    let client = start_server().await;
+
+    // Far future epoch (year 2100+) — entry should not be expired
+    client.put_with_ttl("future_key", b"fresh value", 4_102_444_800).await.expect("put_with_ttl failed");
+
+    let result = client.get("future_key").await.expect("get failed");
+    assert_eq!(result.value, b"fresh value");
+    assert!(!result.expired);
+
+    let result = client.get_allowing_expired("future_key").await.expect("get_allowing_expired failed");
+    assert_eq!(result.value, b"fresh value");
+    assert!(!result.expired);
+}
+
+#[tokio::test]
+async fn test_put_with_invalid_ttl_returns_400() {
+    use reqwest::Client as HttpClient;
+
+    let server_client = start_server().await;
+    let url = server_client.build_key_url("k");
+
+    let http = HttpClient::new();
+    let response = http.put(&url)
+        .header("Idempotency-Key", "tok-invalid-ttl")
+        .header("X-TTL", "not-a-number")
+        .body(b"value".to_vec())
+        .send()
+        .await
+        .expect("request failed");
+
+    assert_eq!(response.status(), 400);
 }

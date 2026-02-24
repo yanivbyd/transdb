@@ -9,17 +9,45 @@ use axum::{
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
 use tokio::time::timeout;
 use trandb_common::{ErrorResponse, MAX_KEY_SIZE, MAX_VALUE_SIZE};
 
 const LOCK_TIMEOUT: Duration = Duration::from_secs(1);
 
+/// Abstraction over current time for testability.
+pub trait Clock: Send + Sync {
+    fn unix_now_secs(&self) -> u64;
+}
+
+/// Production clock backed by `SystemTime`.
+pub struct SystemClock;
+
+impl Clock for SystemClock {
+    fn unix_now_secs(&self) -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Entry {
     pub value: Bytes,
     pub version: u64,
+    pub expires_at: Option<u64>,
+}
+
+impl Entry {
+    /// Returns `true` if the entry has a TTL and the current time is at or past it.
+    pub fn is_expired(&self, clock: &dyn Clock) -> bool {
+        match self.expires_at {
+            None => false,
+            Some(ts) => clock.unix_now_secs() >= ts,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -47,15 +75,21 @@ pub type Db = Arc<RwLock<DbState>>;
 #[derive(Clone)]
 pub struct AppState {
     pub db: Db,
+    pub clock: Arc<dyn Clock>,
 }
 
 impl AppState {
     pub fn new() -> Self {
+        Self::with_clock(Arc::new(SystemClock))
+    }
+
+    pub fn with_clock(clock: Arc<dyn Clock>) -> Self {
         Self {
             db: Arc::new(RwLock::new(DbState {
                 store: HashMap::new(),
                 idempotency_cache: HashMap::new(),
             })),
+            clock,
         }
     }
 }
@@ -163,7 +197,8 @@ fn verify_and_build_cached_delete(record: &IdempotencyRecord, key: &str) -> Resp
     StatusCode::NO_CONTENT.into_response()
 }
 
-/// Handler for GET /keys/:key — returns the value and ETag (version) if found, 404 if not
+/// Handler for GET /keys/:key — returns the value and ETag (version) if found, 404 if not.
+/// If the entry has an expired TTL, adds `X-Expired: true` to the response.
 pub async fn handle_get(State(state): State<AppState>, Path(key): Path<String>) -> Response {
     if key.len() > MAX_KEY_SIZE {
         return error_response(
@@ -179,15 +214,20 @@ pub async fn handle_get(State(state): State<AppState>, Path(key): Path<String>) 
 
     match db_guard.store.get(&key) {
         Some(entry) => {
+            let expired = entry.is_expired(state.clock.as_ref());
             let mut response = (StatusCode::OK, entry.value.clone()).into_response();
             response.headers_mut().insert(header::ETAG, etag_value(entry.version));
+            if expired {
+                response.headers_mut().insert("x-expired", HeaderValue::from_static("true"));
+            }
             response
         }
         None => error_response(StatusCode::NOT_FOUND, format!("Key not found: {}", key)),
     }
 }
 
-/// Handler for PUT /keys/:key — stores the request body; requires Idempotency-Key header
+/// Handler for PUT /keys/:key — stores the request body; requires Idempotency-Key header.
+/// Accepts an optional `X-TTL` header containing an absolute Unix epoch timestamp (u64).
 pub async fn handle_put(
     State(state): State<AppState>,
     Path(key): Path<String>,
@@ -207,6 +247,14 @@ pub async fn handle_put(
         );
     }
 
+    let expires_at = match headers.get("x-ttl") {
+        None => None,
+        Some(v) => match v.to_str().ok().and_then(|s| s.parse::<u64>().ok()) {
+            Some(ts) => Some(ts),
+            None => return error_response(StatusCode::BAD_REQUEST, "X-TTL must be a non-negative integer"),
+        },
+    };
+
     let idempotency_key = match extract_idempotency_key(&headers) {
         Ok(k) => k,
         Err(r) => return r,
@@ -224,9 +272,11 @@ pub async fn handle_put(
     let entry = db_guard.store.entry(key.clone()).or_insert_with(|| Entry {
         value: Bytes::new(),
         version: 0,
+        expires_at: None,
     });
     entry.version += 1;
     entry.value = body;
+    entry.expires_at = expires_at;
     let version = entry.version;
 
     let record = IdempotencyRecord {

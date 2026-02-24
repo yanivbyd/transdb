@@ -77,9 +77,9 @@ async fn test_get_returns_key_not_found_on_404() {
         .await;
 
     let client = Client::new(ClientConfig { base_url: server.url() });
-    let result = client.get("missing_key").await;
 
-    assert!(matches!(result, Err(TranDbError::KeyNotFound(k)) if k == "missing_key"));
+    assert!(matches!(client.get("missing_key").await, Err(TranDbError::KeyNotFound(k)) if k == "missing_key"));
+    assert!(matches!(client.get_allowing_expired("missing_key").await, Err(TranDbError::KeyNotFound(k)) if k == "missing_key"));
 }
 
 #[tokio::test]
@@ -294,8 +294,8 @@ async fn test_get_returns_network_error_when_server_unreachable() {
 async fn test_get_rejects_oversized_key() {
     let client = Client::with_default_config();
     let key = "a".repeat(MAX_KEY_SIZE + 1);
-    let result = client.get(&key).await;
-    assert!(matches!(result, Err(TranDbError::KeyTooLarge(_))));
+    assert!(matches!(client.get(&key).await, Err(TranDbError::KeyTooLarge(_))));
+    assert!(matches!(client.get_allowing_expired(&key).await, Err(TranDbError::KeyTooLarge(_))));
 }
 
 #[tokio::test]
@@ -337,3 +337,80 @@ async fn test_get_parses_400_as_http_error() {
 
     assert!(matches!(result, Err(TranDbError::HttpError(400, ref msg)) if msg == "Key exceeds maximum size of 1024 bytes"));
 }
+
+// --- TTL: put_with_ttl ---
+
+#[tokio::test]
+async fn test_put_with_ttl_sends_x_ttl_header() {
+    let mut server = mockito::Server::new_async().await;
+    server.mock("PUT", "/keys/my_key")
+        .match_header("x-ttl", "9999")
+        .with_status(200)
+        .with_header("ETag", "\"1\"")
+        .create_async()
+        .await;
+
+    let client = Client::new(ClientConfig { base_url: server.url() });
+    let version = client.put_with_ttl("my_key", b"hello", 9999).await.unwrap();
+
+    assert_eq!(version, 1);
+}
+
+#[tokio::test]
+async fn test_put_with_ttl_rejects_oversized_inputs() {
+    let client = Client::with_default_config();
+
+    let key = "a".repeat(MAX_KEY_SIZE + 1);
+    assert!(matches!(client.put_with_ttl(&key, b"hello", 9999).await, Err(TranDbError::KeyTooLarge(_))));
+
+    let value = vec![0u8; MAX_VALUE_SIZE + 1];
+    assert!(matches!(client.put_with_ttl("my_key", &value, 9999).await, Err(TranDbError::ValueTooLarge(_))));
+}
+
+// --- TTL: get ---
+
+#[tokio::test]
+async fn test_get_expired_entry_behavior() {
+    let mut server = mockito::Server::new_async().await;
+    server.mock("GET", "/keys/my_key")
+        .with_status(200)
+        .with_header("ETag", "\"1\"")
+        .with_header("X-Expired", "true")
+        .with_body(b"stale")
+        .create_async()
+        .await;
+
+    let client = Client::new(ClientConfig { base_url: server.url() });
+
+    // Strong guarantee: expired entry is treated as not found
+    assert!(matches!(client.get("my_key").await, Err(TranDbError::KeyNotFound(k)) if k == "my_key"));
+
+    // Soft guarantee: expired entry is returned with expired=true
+    let result = client.get_allowing_expired("my_key").await.unwrap();
+    assert!(result.expired);
+    assert_eq!(result.value, b"stale");
+}
+
+#[tokio::test]
+async fn test_get_live_entry_behavior() {
+    let mut server = mockito::Server::new_async().await;
+    server.mock("GET", "/keys/my_key")
+        .with_status(200)
+        .with_header("ETag", "\"1\"")
+        .with_body(b"fresh")
+        .create_async()
+        .await;
+
+    let client = Client::new(ClientConfig { base_url: server.url() });
+
+    // Strong guarantee: live entry is returned normally
+    let result = client.get("my_key").await.unwrap();
+    assert_eq!(result.value, b"fresh");
+    assert!(!result.expired);
+
+    // Soft guarantee: live entry also has expired=false
+    let result = client.get_allowing_expired("my_key").await.unwrap();
+    assert_eq!(result.value, b"fresh");
+    assert!(!result.expired);
+}
+

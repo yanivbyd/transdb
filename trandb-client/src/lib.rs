@@ -20,6 +20,8 @@ impl Default for ClientConfig {
 pub struct GetResult {
     pub value: Vec<u8>,
     pub version: u64,
+    /// `true` when the server returned `X-Expired: true` (entry exists but TTL has elapsed).
+    pub expired: bool,
 }
 
 /// TranDB Client
@@ -47,8 +49,19 @@ impl Client {
         format!("{}/keys/{}", self.config.base_url, key)
     }
 
-    /// Get a value by key; returns the value bytes and the current version
+    /// Get a value by key (strong guarantee).
+    /// Returns `KeyNotFound` if the key does not exist **or** if it exists but has expired.
     pub async fn get(&self, key: &str) -> Result<GetResult> {
+        let result = self.get_allowing_expired(key).await?;
+        if result.expired {
+            return Err(TranDbError::KeyNotFound(key.to_string()));
+        }
+        Ok(result)
+    }
+
+    /// Get a value by key, returning it even if its TTL has elapsed (soft guarantee).
+    /// Check `GetResult::expired` to determine whether the value is stale.
+    pub async fn get_allowing_expired(&self, key: &str) -> Result<GetResult> {
         if key.len() > MAX_KEY_SIZE {
             return Err(TranDbError::KeyTooLarge(MAX_KEY_SIZE));
         }
@@ -68,17 +81,32 @@ impl Client {
         }
 
         let version = parse_etag(&response).ok_or(TranDbError::MissingETag)?;
+        let expired = response
+            .headers()
+            .get("x-expired")
+            .and_then(|v| v.to_str().ok())
+            == Some("true");
 
         let bytes = response
             .bytes()
             .await
             .map_err(|e| TranDbError::NetworkError(e.to_string()))?;
 
-        Ok(GetResult { value: bytes.to_vec(), version })
+        Ok(GetResult { value: bytes.to_vec(), version, expired })
     }
 
-    /// Store a value under the given key; returns the version assigned by this write
+    /// Store a value under the given key; returns the version assigned by this write.
     pub async fn put(&self, key: &str, value: &[u8]) -> Result<u64> {
+        self.put_impl(key, value, None).await
+    }
+
+    /// Store a value under the given key with an absolute Unix epoch TTL (seconds).
+    /// Returns the version assigned by this write.
+    pub async fn put_with_ttl(&self, key: &str, value: &[u8], ttl: u64) -> Result<u64> {
+        self.put_impl(key, value, Some(ttl)).await
+    }
+
+    async fn put_impl(&self, key: &str, value: &[u8], ttl: Option<u64>) -> Result<u64> {
         if key.len() > MAX_KEY_SIZE {
             return Err(TranDbError::KeyTooLarge(MAX_KEY_SIZE));
         }
@@ -88,12 +116,18 @@ impl Client {
 
         let url = self.build_key_url(key);
 
-        let response = self
+        let mut request = self
             .http_client
             .put(&url)
             .header("Content-Type", "application/octet-stream")
             .header("Idempotency-Key", Uuid::new_v4().to_string())
-            .body(value.to_vec())
+            .body(value.to_vec());
+
+        if let Some(ts) = ttl {
+            request = request.header("X-TTL", ts.to_string());
+        }
+
+        let response = request
             .send()
             .await
             .map_err(|e| TranDbError::NetworkError(e.to_string()))?;

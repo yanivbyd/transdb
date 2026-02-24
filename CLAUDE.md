@@ -27,6 +27,7 @@ This is TranDB, a distributed in-memory key-value database written in Rust. See 
 - Unit tests MUST reside in their own dedicated files (e.g. `tests/unit_foo.rs`), NOT in inline `#[cfg(test)]` modules within source files
 - After writing tests, ALWAYS run `cargo llvm-cov` to verify coverage. Use the env vars from the Justfile if needed (`LLVM_COV` / `LLVM_PROFDATA`)
 - All new code must be covered. Uncovered lines must be either tested or explicitly justified (e.g. `run()` which blocks forever is inherently not unit-testable)
+- Prefer fewer, broader tests over many narrow ones. If a single test can assert multiple related behaviours without obscuring intent, merge them. Only use separate tests when the failure modes are meaningfully distinct and a combined test would hide which behaviour broke.
 
 ## Specification Workflow
 
