@@ -4,6 +4,7 @@ members = [
     "transdb-client",
     "transdb-common",
     "transdb-integration-tests",
+    "transdb-stress-tests",
 ]
 resolver = "2"
 

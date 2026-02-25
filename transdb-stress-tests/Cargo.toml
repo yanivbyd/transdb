@@ -1,0 +1,13 @@
+[package]
+name = "transdb-stress-tests"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "transdb-stress"
+path = "src/main.rs"
+
+[dependencies]
+rand = "0.8"
