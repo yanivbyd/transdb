@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use transdb_common::{MAX_KEY_SIZE, MAX_VALUE_SIZE};
 use transdb_server::{
-    handle_delete, handle_get, handle_put, AppState, Clock, Entry, Server, ServerConfig,
+    handle_delete, handle_get, handle_put, AppState, Clock, Entry, NodeRole, Server, ServerConfig,
 };
 
 // --- Test helpers ---
@@ -27,11 +27,15 @@ impl Clock for MockClock {
 }
 
 fn empty_store() -> AppState {
-    AppState::with_clock(MockClock::new(NOW) as Arc<dyn Clock>)
+    AppState::new(MockClock::new(NOW) as Arc<dyn Clock>, NodeRole::Primary)
+}
+
+fn replica_store() -> AppState {
+    AppState::new(MockClock::new(NOW) as Arc<dyn Clock>, NodeRole::Replica)
 }
 
 async fn store_with(key: &str, value: &[u8]) -> AppState {
-    let state = AppState::with_clock(MockClock::new(NOW) as Arc<dyn Clock>);
+    let state = AppState::new(MockClock::new(NOW) as Arc<dyn Clock>, NodeRole::Primary);
     state.db.write().await.store.insert(
         key.to_string(),
         Entry { value: Bytes::from(value.to_vec()), version: 1, expires_at: None },
@@ -68,37 +72,25 @@ async fn assert_get(state: &AppState, key: &str, expected: Option<(&[u8], u64)>)
 }
 
 #[test]
-fn test_server_config_default() {
-    let config = ServerConfig::default();
-    assert_eq!(config.address.to_string(), "127.0.0.1:8080");
-}
-
-#[test]
 fn test_server_config_custom() {
     use std::net::SocketAddr;
     let addr: SocketAddr = "0.0.0.0:9000".parse().unwrap();
-    let config = ServerConfig { address: addr };
+    let config = ServerConfig { address: addr, role: NodeRole::Primary, topology: None };
     assert_eq!(config.address.to_string(), "0.0.0.0:9000");
-}
-
-#[test]
-fn test_server_creation() {
-    let server = Server::with_default_config();
-    assert_eq!(server.address().to_string(), "127.0.0.1:8080");
 }
 
 #[test]
 fn test_server_creation_with_config() {
     use std::net::SocketAddr;
     let addr: SocketAddr = "0.0.0.0:9000".parse().unwrap();
-    let config = ServerConfig { address: addr };
+    let config = ServerConfig { address: addr, role: NodeRole::Primary, topology: None };
     let server = Server::new(config);
     assert_eq!(server.address().to_string(), "0.0.0.0:9000");
 }
 
 #[test]
 fn test_router_creation() {
-    let router = Server::create_router(AppState::new());
+    let router = Server::create_router(AppState::new(MockClock::new(NOW) as Arc<dyn Clock>, NodeRole::Primary));
     assert!(std::mem::size_of_val(&router) > 0);
 }
 
@@ -465,14 +457,6 @@ async fn test_handle_delete_key_size_checked_before_idempotency_key() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
-// --- AppState::default ---
-
-#[test]
-fn test_app_state_default() {
-    let state = AppState::default();
-    let _ = state.db;
-}
-
 // --- Entry::is_expired ---
 
 #[test]
@@ -595,3 +579,21 @@ async fn test_handle_get_no_x_expired_for_live_entry() {
     let response2 = handle_get(State(state2), Path("k".to_string())).await;
     assert!(response2.headers().get("x-expired").is_none());
 }
+
+// --- Replica role enforcement ---
+
+#[tokio::test]
+async fn test_replica_rejects_all_key_operations_with_405() {
+    let state = replica_store();
+    let headers = headers_with_idempotency_key("tok-1");
+
+    let get_resp = handle_get(State(state.clone()), Path("k".to_string())).await;
+    assert_eq!(get_resp.status(), StatusCode::METHOD_NOT_ALLOWED);
+
+    let put_resp = handle_put(State(state.clone()), Path("k".to_string()), headers.clone(), Bytes::from("v")).await;
+    assert_eq!(put_resp.status(), StatusCode::METHOD_NOT_ALLOWED);
+
+    let del_resp = handle_delete(State(state.clone()), Path("k".to_string()), headers).await;
+    assert_eq!(del_resp.status(), StatusCode::METHOD_NOT_ALLOWED);
+}
+

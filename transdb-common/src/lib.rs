@@ -4,6 +4,16 @@ use thiserror::Error;
 pub const MAX_KEY_SIZE: usize = 1_024;
 pub const MAX_VALUE_SIZE: usize = 4_194_304;
 
+/// Describes the full cluster topology shared by all nodes.
+///
+/// `primary_addr` and `replica_addr` are bare `host:port` strings (no scheme).
+/// A single-node deployment omits `replica_addr`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Topology {
+    pub primary_addr: String,
+    pub replica_addr: Option<String>,
+}
+
 /// Error types for TransDB operations
 #[derive(Debug, Error, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TransDbError {

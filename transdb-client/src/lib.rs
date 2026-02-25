@@ -1,18 +1,10 @@
-use transdb_common::{ErrorResponse, Result, TransDbError, MAX_KEY_SIZE, MAX_VALUE_SIZE};
+use transdb_common::{ErrorResponse, Result, Topology, TransDbError, MAX_KEY_SIZE, MAX_VALUE_SIZE};
 use uuid::Uuid;
 
 /// TransDB client configuration
 #[derive(Debug, Clone)]
 pub struct ClientConfig {
-    pub base_url: String,
-}
-
-impl Default for ClientConfig {
-    fn default() -> Self {
-        Self {
-            base_url: "http://127.0.0.1:8080".to_string(),
-        }
-    }
+    pub topology: Topology,
 }
 
 /// Result returned by a successful GET
@@ -27,26 +19,32 @@ pub struct GetResult {
 /// TransDB Client
 pub struct Client {
     pub config: ClientConfig,
+    /// Current target address (`host:port`); all requests go to this node.
+    /// Defaults to `config.topology.primary_addr`.
+    target: String,
     http_client: reqwest::Client,
 }
 
 impl Client {
     /// Create a new client with the given configuration
     pub fn new(config: ClientConfig) -> Self {
+        let target = config.topology.primary_addr.clone();
         Self {
             config,
+            target,
             http_client: reqwest::Client::new(),
         }
     }
 
-    /// Create a new client with default configuration
-    pub fn with_default_config() -> Self {
-        Self::new(ClientConfig::default())
+    /// Override the target node for all subsequent requests.
+    /// Pass a bare `host:port` address matching an entry in the topology.
+    pub fn set_target(&mut self, addr: &str) {
+        self.target = addr.to_string();
     }
 
-    /// Build the URL for a key operation
+    /// Build the URL for a key operation against the current target.
     pub fn build_key_url(&self, key: &str) -> String {
-        format!("{}/keys/{}", self.config.base_url, key)
+        format!("http://{}/keys/{}", self.target, key)
     }
 
     /// Get a value by key (strong guarantee).

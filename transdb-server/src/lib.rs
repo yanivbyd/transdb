@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
 use tokio::time::timeout;
-use transdb_common::{ErrorResponse, MAX_KEY_SIZE, MAX_VALUE_SIZE};
+use transdb_common::{ErrorResponse, Topology, MAX_KEY_SIZE, MAX_VALUE_SIZE};
 
 const LOCK_TIMEOUT: Duration = Duration::from_secs(1);
 
@@ -31,6 +31,13 @@ impl Clock for SystemClock {
             .unwrap_or_default()
             .as_secs()
     }
+}
+
+/// Role this process plays in the cluster.
+#[derive(Debug, Clone, PartialEq)]
+pub enum NodeRole {
+    Primary,
+    Replica,
 }
 
 #[derive(Clone, Debug)]
@@ -76,27 +83,19 @@ pub type Db = Arc<RwLock<DbState>>;
 pub struct AppState {
     pub db: Db,
     pub clock: Arc<dyn Clock>,
+    pub role: NodeRole,
 }
 
 impl AppState {
-    pub fn new() -> Self {
-        Self::with_clock(Arc::new(SystemClock))
-    }
-
-    pub fn with_clock(clock: Arc<dyn Clock>) -> Self {
+    pub fn new(clock: Arc<dyn Clock>, role: NodeRole) -> Self {
         Self {
             db: Arc::new(RwLock::new(DbState {
                 store: HashMap::new(),
                 idempotency_cache: HashMap::new(),
             })),
             clock,
+            role,
         }
-    }
-}
-
-impl Default for AppState {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -104,14 +103,8 @@ impl Default for AppState {
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
     pub address: SocketAddr,
-}
-
-impl Default for ServerConfig {
-    fn default() -> Self {
-        Self {
-            address: "127.0.0.1:8080".parse().unwrap(),
-        }
-    }
+    pub role: NodeRole,
+    pub topology: Option<Topology>,
 }
 
 /// TransDB Server
@@ -123,11 +116,6 @@ impl Server {
     /// Create a new server with the given configuration
     pub fn new(config: ServerConfig) -> Self {
         Self { config }
-    }
-
-    /// Create a new server with default configuration
-    pub fn with_default_config() -> Self {
-        Self::new(ServerConfig::default())
     }
 
     /// Get the server's configured address
@@ -147,7 +135,7 @@ impl Server {
 
     /// Run the server, signalling `ready_tx` with the bound address once accepting connections
     pub async fn run(self, ready_tx: tokio::sync::oneshot::Sender<SocketAddr>) -> Result<(), Box<dyn std::error::Error>> {
-        let state = AppState::new();
+        let state = AppState::new(Arc::new(SystemClock), self.config.role.clone());
         let app = Self::create_router(state);
         let listener = tokio::net::TcpListener::bind(self.config.address).await?;
         let local_addr = listener.local_addr()?;
@@ -200,6 +188,10 @@ fn verify_and_build_cached_delete(record: &IdempotencyRecord, key: &str) -> Resp
 /// Handler for GET /keys/:key — returns the value and ETag (version) if found, 404 if not.
 /// If the entry has an expired TTL, adds `X-Expired: true` to the response.
 pub async fn handle_get(State(state): State<AppState>, Path(key): Path<String>) -> Response {
+    if state.role == NodeRole::Replica {
+        return error_response(StatusCode::METHOD_NOT_ALLOWED, "Replica does not accept key operations");
+    }
+
     if key.len() > MAX_KEY_SIZE {
         return error_response(
             StatusCode::BAD_REQUEST,
@@ -234,6 +226,10 @@ pub async fn handle_put(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
+    if state.role == NodeRole::Replica {
+        return error_response(StatusCode::METHOD_NOT_ALLOWED, "Replica does not accept key operations");
+    }
+
     if key.len() > MAX_KEY_SIZE {
         return error_response(
             StatusCode::BAD_REQUEST,
@@ -299,6 +295,10 @@ pub async fn handle_delete(
     Path(key): Path<String>,
     headers: HeaderMap,
 ) -> Response {
+    if state.role == NodeRole::Replica {
+        return error_response(StatusCode::METHOD_NOT_ALLOWED, "Replica does not accept key operations");
+    }
+
     if key.len() > MAX_KEY_SIZE {
         return error_response(
             StatusCode::BAD_REQUEST,

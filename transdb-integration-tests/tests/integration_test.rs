@@ -1,36 +1,56 @@
+use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
 use transdb_client::{Client, ClientConfig};
-use transdb_common::{ErrorResponse, TransDbError, MAX_KEY_SIZE, MAX_VALUE_SIZE};
-use transdb_server::{Server, ServerConfig};
+use transdb_common::{ErrorResponse, Topology, TransDbError, MAX_KEY_SIZE, MAX_VALUE_SIZE};
+use transdb_server::{NodeRole, Server, ServerConfig};
 
 const SERVER_READY_TIMEOUT: Duration = Duration::from_secs(60);
 
-async fn start_server() -> Client {
-    let (ready_tx, ready_rx) = oneshot::channel();
+struct Cluster {
+    primary: Client,
+    replica: Client,
+}
 
+async fn start_node(role: NodeRole) -> SocketAddr {
+    let (ready_tx, ready_rx) = oneshot::channel();
     let server = Server::new(ServerConfig {
         address: "127.0.0.1:0".parse().unwrap(),
+        role,
+        topology: None,
     });
-
     tokio::spawn(async move {
         server.run(ready_tx).await.expect("server failed");
     });
-
-    let addr = timeout(SERVER_READY_TIMEOUT, ready_rx)
+    timeout(SERVER_READY_TIMEOUT, ready_rx)
         .await
         .expect("server did not start within 60 seconds")
-        .expect("server ready signal dropped");
+        .expect("server ready signal dropped")
+}
 
-    Client::new(ClientConfig {
-        base_url: format!("http://{}", addr),
-    })
+async fn start_cluster() -> Cluster {
+    let (primary_addr, replica_addr) = tokio::join!(
+        start_node(NodeRole::Primary),
+        start_node(NodeRole::Replica),
+    );
+
+    let topology = Topology {
+        primary_addr: primary_addr.to_string(),
+        replica_addr: Some(replica_addr.to_string()),
+    };
+
+    let primary = Client::new(ClientConfig { topology: topology.clone() });
+
+    let mut replica = Client::new(ClientConfig { topology: topology.clone() });
+    replica.set_target(topology.replica_addr.as_deref().unwrap());
+
+    Cluster { primary, replica }
 }
 
 #[tokio::test]
 async fn test_get_returns_key_not_found() {
-    let client = start_server().await;
+    let client = start_cluster().await.primary;
 
     assert!(matches!(client.get("some_key").await, Err(TransDbError::KeyNotFound(_))));
     assert!(matches!(client.get_allowing_expired("some_key").await, Err(TransDbError::KeyNotFound(_))));
@@ -38,7 +58,7 @@ async fn test_get_returns_key_not_found() {
 
 #[tokio::test]
 async fn test_put_and_get_round_trip() {
-    let client = start_server().await;
+    let client = start_cluster().await.primary;
 
     let put_version = client.put("my_key", b"hello world").await.expect("put failed");
     assert_eq!(put_version, 1);
@@ -56,7 +76,7 @@ async fn test_put_and_get_round_trip() {
 
 #[tokio::test]
 async fn test_delete_removes_existing_key() {
-    let client = start_server().await;
+    let client = start_cluster().await.primary;
 
     let put_version = client.put("my_key", b"hello").await.expect("put failed");
     assert_eq!(put_version, 1);
@@ -73,7 +93,7 @@ async fn test_delete_removes_existing_key() {
 
 #[tokio::test]
 async fn test_delete_is_idempotent() {
-    let client = start_server().await;
+    let client = start_cluster().await.primary;
 
     // Each delete call auto-generates a unique idempotency key, so both are first-time requests.
     let first = client.delete("nonexistent").await;
@@ -85,7 +105,7 @@ async fn test_delete_is_idempotent() {
 
 #[tokio::test]
 async fn test_put_overwrites_existing_key() {
-    let client = start_server().await;
+    let client = start_cluster().await.primary;
 
     let v1 = client.put("my_key", b"first").await.expect("first put failed");
     assert_eq!(v1, 1);
@@ -102,7 +122,7 @@ async fn test_put_overwrites_existing_key() {
 
 #[tokio::test]
 async fn test_put_returns_version_1_for_new_key() {
-    let client = start_server().await;
+    let client = start_cluster().await.primary;
 
     let version = client.put("k", b"v").await.expect("put failed");
     assert_eq!(version, 1);
@@ -110,7 +130,7 @@ async fn test_put_returns_version_1_for_new_key() {
 
 #[tokio::test]
 async fn test_put_increments_version() {
-    let client = start_server().await;
+    let client = start_cluster().await.primary;
 
     let v1 = client.put("k", b"first").await.expect("first put failed");
     let v2 = client.put("k", b"second").await.expect("second put failed");
@@ -121,7 +141,7 @@ async fn test_put_increments_version() {
 
 #[tokio::test]
 async fn test_get_returns_etag_matching_put_version() {
-    let client = start_server().await;
+    let client = start_cluster().await.primary;
 
     let v = client.put("k", b"v").await.expect("put failed");
     let result = client.get("k").await.expect("get failed");
@@ -131,7 +151,7 @@ async fn test_get_returns_etag_matching_put_version() {
 
 #[tokio::test]
 async fn test_version_resets_after_delete_and_recreate() {
-    let client = start_server().await;
+    let client = start_cluster().await.primary;
 
     client.put("k", b"v1").await.expect("first put failed");
     client.put("k", b"v2").await.expect("second put failed");
@@ -145,9 +165,9 @@ async fn test_version_resets_after_delete_and_recreate() {
 
 #[tokio::test]
 async fn test_put_idempotency_replay_returns_same_version() {
-    let client = start_server().await;
+    let client = start_cluster().await.primary;
     let http = reqwest::Client::new();
-    let url = format!("{}/keys/idem_key", client.config.base_url);
+    let url = client.build_key_url("idem_key");
 
     let r1 = http
         .put(&url)
@@ -176,9 +196,9 @@ async fn test_put_idempotency_replay_returns_same_version() {
 
 #[tokio::test]
 async fn test_put_idempotency_replay_does_not_write_twice() {
-    let client = start_server().await;
+    let client = start_cluster().await.primary;
     let http = reqwest::Client::new();
-    let url = format!("{}/keys/idem_write", client.config.base_url);
+    let url = client.build_key_url("idem_write");
 
     // Two PUTs with the same idempotency key
     for _ in 0..2 {
@@ -199,9 +219,9 @@ async fn test_put_idempotency_replay_does_not_write_twice() {
 
 #[tokio::test]
 async fn test_delete_idempotency_replay_returns_204() {
-    let client = start_server().await;
+    let client = start_cluster().await.primary;
     let http = reqwest::Client::new();
-    let url = format!("{}/keys/del_key", client.config.base_url);
+    let url = client.build_key_url("del_key");
 
     let r1 = http
         .delete(&url)
@@ -222,11 +242,11 @@ async fn test_delete_idempotency_replay_returns_204() {
 
 #[tokio::test]
 async fn test_put_idempotency_mismatch_key_returns_422() {
-    let client = start_server().await;
+    let client = start_cluster().await.primary;
     let http = reqwest::Client::new();
 
     // First PUT for key_a with token X
-    http.put(format!("{}/keys/key_a", client.config.base_url))
+    http.put(client.build_key_url("key_a"))
         .header("Content-Type", "application/octet-stream")
         .header("Idempotency-Key", "mismatch-token")
         .body(b"v".to_vec())
@@ -236,7 +256,7 @@ async fn test_put_idempotency_mismatch_key_returns_422() {
 
     // Second PUT for key_b with same token X
     let r2 = http
-        .put(format!("{}/keys/key_b", client.config.base_url))
+        .put(client.build_key_url("key_b"))
         .header("Content-Type", "application/octet-stream")
         .header("Idempotency-Key", "mismatch-token")
         .body(b"v".to_vec())
@@ -249,9 +269,9 @@ async fn test_put_idempotency_mismatch_key_returns_422() {
 
 #[tokio::test]
 async fn test_put_missing_idempotency_key_returns_400() {
-    let client = start_server().await;
+    let client = start_cluster().await.primary;
     let http = reqwest::Client::new();
-    let url = format!("{}/keys/k", client.config.base_url);
+    let url = client.build_key_url("k");
 
     let response = http
         .put(&url)
@@ -268,9 +288,9 @@ async fn test_put_missing_idempotency_key_returns_400() {
 
 #[tokio::test]
 async fn test_delete_missing_idempotency_key_returns_400() {
-    let client = start_server().await;
+    let client = start_cluster().await.primary;
     let http = reqwest::Client::new();
-    let url = format!("{}/keys/k", client.config.base_url);
+    let url = client.build_key_url("k");
 
     let response = http.delete(&url).send().await.unwrap();
 
@@ -283,10 +303,10 @@ async fn test_delete_missing_idempotency_key_returns_400() {
 
 #[tokio::test]
 async fn test_server_rejects_oversized_key_on_put() {
-    let client = start_server().await;
+    let client = start_cluster().await.primary;
     let http = reqwest::Client::new();
     let oversized_key = "a".repeat(MAX_KEY_SIZE + 1);
-    let url = format!("{}/keys/{}", client.config.base_url, oversized_key);
+    let url = format!("http://{}/keys/{}", client.config.topology.primary_addr, oversized_key);
 
     let response = http
         .put(&url)
@@ -304,9 +324,9 @@ async fn test_server_rejects_oversized_key_on_put() {
 
 #[tokio::test]
 async fn test_server_rejects_oversized_value_on_put() {
-    let client = start_server().await;
+    let client = start_cluster().await.primary;
     let http = reqwest::Client::new();
-    let url = format!("{}/keys/my_key", client.config.base_url);
+    let url = client.build_key_url("my_key");
     let oversized_value = vec![0u8; MAX_VALUE_SIZE + 1];
 
     let response = http
@@ -325,10 +345,10 @@ async fn test_server_rejects_oversized_value_on_put() {
 
 #[tokio::test]
 async fn test_server_rejects_oversized_key_on_get() {
-    let client = start_server().await;
+    let client = start_cluster().await.primary;
     let http = reqwest::Client::new();
     let oversized_key = "a".repeat(MAX_KEY_SIZE + 1);
-    let url = format!("{}/keys/{}", client.config.base_url, oversized_key);
+    let url = format!("http://{}/keys/{}", client.config.topology.primary_addr, oversized_key);
 
     let response = http.get(&url).send().await.unwrap();
 
@@ -341,7 +361,7 @@ async fn test_server_rejects_oversized_key_on_get() {
 async fn test_client_rejects_oversized_key_without_contacting_server() {
     // Uses an unbound address — if the client pre-flight works, no connection is attempted
     let client = Client::new(ClientConfig {
-        base_url: "http://127.0.0.1:59212".to_string(),
+        topology: Topology { primary_addr: "127.0.0.1:59212".to_string(), replica_addr: None },
     });
     let oversized_key = "a".repeat(MAX_KEY_SIZE + 1);
 
@@ -355,7 +375,7 @@ async fn test_client_rejects_oversized_key_without_contacting_server() {
 async fn test_client_rejects_oversized_value_without_contacting_server() {
     // Uses an unbound address — if the client pre-flight works, no connection is attempted
     let client = Client::new(ClientConfig {
-        base_url: "http://127.0.0.1:59212".to_string(),
+        topology: Topology { primary_addr: "127.0.0.1:59212".to_string(), replica_addr: None },
     });
     let oversized_value = vec![0u8; MAX_VALUE_SIZE + 1];
 
@@ -369,7 +389,7 @@ async fn test_client_rejects_oversized_value_without_contacting_server() {
 
 #[tokio::test]
 async fn test_expired_entry_behavior() {
-    let client = start_server().await;
+    let client = start_cluster().await.primary;
 
     // Epoch 1 is well in the past — entry is immediately expired
     let version = client.put_with_ttl("ttl_key", b"stale value", 1).await.expect("put_with_ttl failed");
@@ -386,7 +406,7 @@ async fn test_expired_entry_behavior() {
 
 #[tokio::test]
 async fn test_get_returns_ok_for_entry_with_future_ttl() {
-    let client = start_server().await;
+    let client = start_cluster().await.primary;
 
     // Far future epoch (year 2100+) — entry should not be expired
     client.put_with_ttl("future_key", b"fresh value", 4_102_444_800).await.expect("put_with_ttl failed");
@@ -404,8 +424,7 @@ async fn test_get_returns_ok_for_entry_with_future_ttl() {
 async fn test_put_with_invalid_ttl_returns_400() {
     use reqwest::Client as HttpClient;
 
-    let server_client = start_server().await;
-    let url = server_client.build_key_url("k");
+    let url = start_cluster().await.primary.build_key_url("k");
 
     let http = HttpClient::new();
     let response = http.put(&url)
@@ -417,4 +436,39 @@ async fn test_put_with_invalid_ttl_returns_400() {
         .expect("request failed");
 
     assert_eq!(response.status(), 400);
+}
+
+// --- Replication: replica enforces 405 ---
+
+#[tokio::test]
+async fn test_replica_rejects_all_key_operations() {
+    let cluster = start_cluster().await;
+
+    assert!(matches!(cluster.replica.get("k").await, Err(TransDbError::HttpError(405, _))));
+    assert!(matches!(cluster.replica.put("k", b"v").await, Err(TransDbError::HttpError(405, _))));
+    assert!(matches!(cluster.replica.delete("k").await, Err(TransDbError::HttpError(405, _))));
+}
+
+#[tokio::test]
+async fn test_set_target_routes_to_replica_and_back() {
+    let cluster = start_cluster().await;
+    let replica_addr = cluster.replica.config.topology.replica_addr.clone().unwrap();
+    let primary_addr = cluster.primary.config.topology.primary_addr.clone();
+
+    let mut client = cluster.primary;
+
+    // Primary: writes work
+    let version = client.put("k", b"v").await.expect("put to primary failed");
+    assert_eq!(version, 1);
+
+    // Redirect to replica: all operations rejected with 405
+    client.set_target(&replica_addr);
+    assert!(matches!(client.get("k").await, Err(TransDbError::HttpError(405, _))));
+    assert!(matches!(client.put("k", b"v2").await, Err(TransDbError::HttpError(405, _))));
+    assert!(matches!(client.delete("k").await, Err(TransDbError::HttpError(405, _))));
+
+    // Redirect back to primary: reads/writes work again
+    client.set_target(&primary_addr);
+    let result = client.get("k").await.expect("get from primary failed");
+    assert_eq!(result.value, b"v");
 }
