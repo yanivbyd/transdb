@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
 use tokio::time::timeout;
-use trandb_common::{ErrorResponse, MAX_KEY_SIZE, MAX_VALUE_SIZE};
+use transdb_common::{ErrorResponse, MAX_KEY_SIZE, MAX_VALUE_SIZE};
 
 const LOCK_TIMEOUT: Duration = Duration::from_secs(1);
 
@@ -114,7 +114,7 @@ impl Default for ServerConfig {
     }
 }
 
-/// TranDB Server
+/// TransDB Server
 pub struct Server {
     config: ServerConfig,
 }

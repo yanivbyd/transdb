@@ -1,7 +1,7 @@
-use trandb_common::{ErrorResponse, Result, TranDbError, MAX_KEY_SIZE, MAX_VALUE_SIZE};
+use transdb_common::{ErrorResponse, Result, TransDbError, MAX_KEY_SIZE, MAX_VALUE_SIZE};
 use uuid::Uuid;
 
-/// TranDB client configuration
+/// TransDB client configuration
 #[derive(Debug, Clone)]
 pub struct ClientConfig {
     pub base_url: String,
@@ -24,7 +24,7 @@ pub struct GetResult {
     pub expired: bool,
 }
 
-/// TranDB Client
+/// TransDB Client
 pub struct Client {
     pub config: ClientConfig,
     http_client: reqwest::Client,
@@ -54,7 +54,7 @@ impl Client {
     pub async fn get(&self, key: &str) -> Result<GetResult> {
         let result = self.get_allowing_expired(key).await?;
         if result.expired {
-            return Err(TranDbError::KeyNotFound(key.to_string()));
+            return Err(TransDbError::KeyNotFound(key.to_string()));
         }
         Ok(result)
     }
@@ -63,7 +63,7 @@ impl Client {
     /// Check `GetResult::expired` to determine whether the value is stale.
     pub async fn get_allowing_expired(&self, key: &str) -> Result<GetResult> {
         if key.len() > MAX_KEY_SIZE {
-            return Err(TranDbError::KeyTooLarge(MAX_KEY_SIZE));
+            return Err(TransDbError::KeyTooLarge(MAX_KEY_SIZE));
         }
 
         let url = self.build_key_url(key);
@@ -73,14 +73,14 @@ impl Client {
             .get(&url)
             .send()
             .await
-            .map_err(|e| TranDbError::NetworkError(e.to_string()))?;
+            .map_err(|e| TransDbError::NetworkError(e.to_string()))?;
 
         let status = response.status();
         if !status.is_success() {
             return Err(parse_error_response(status, key, response).await);
         }
 
-        let version = parse_etag(&response).ok_or(TranDbError::MissingETag)?;
+        let version = parse_etag(&response).ok_or(TransDbError::MissingETag)?;
         let expired = response
             .headers()
             .get("x-expired")
@@ -90,7 +90,7 @@ impl Client {
         let bytes = response
             .bytes()
             .await
-            .map_err(|e| TranDbError::NetworkError(e.to_string()))?;
+            .map_err(|e| TransDbError::NetworkError(e.to_string()))?;
 
         Ok(GetResult { value: bytes.to_vec(), version, expired })
     }
@@ -108,10 +108,10 @@ impl Client {
 
     async fn put_impl(&self, key: &str, value: &[u8], ttl: Option<u64>) -> Result<u64> {
         if key.len() > MAX_KEY_SIZE {
-            return Err(TranDbError::KeyTooLarge(MAX_KEY_SIZE));
+            return Err(TransDbError::KeyTooLarge(MAX_KEY_SIZE));
         }
         if value.len() > MAX_VALUE_SIZE {
-            return Err(TranDbError::ValueTooLarge(MAX_VALUE_SIZE));
+            return Err(TransDbError::ValueTooLarge(MAX_VALUE_SIZE));
         }
 
         let url = self.build_key_url(key);
@@ -130,20 +130,20 @@ impl Client {
         let response = request
             .send()
             .await
-            .map_err(|e| TranDbError::NetworkError(e.to_string()))?;
+            .map_err(|e| TransDbError::NetworkError(e.to_string()))?;
 
         let status = response.status();
         if !status.is_success() {
             return Err(parse_error_response(status, key, response).await);
         }
 
-        parse_etag(&response).ok_or(TranDbError::MissingETag)
+        parse_etag(&response).ok_or(TransDbError::MissingETag)
     }
 
     /// Delete the value stored under the given key (idempotent)
     pub async fn delete(&self, key: &str) -> Result<()> {
         if key.len() > MAX_KEY_SIZE {
-            return Err(TranDbError::KeyTooLarge(MAX_KEY_SIZE));
+            return Err(TransDbError::KeyTooLarge(MAX_KEY_SIZE));
         }
 
         let url = self.build_key_url(key);
@@ -154,7 +154,7 @@ impl Client {
             .header("Idempotency-Key", Uuid::new_v4().to_string())
             .send()
             .await
-            .map_err(|e| TranDbError::NetworkError(e.to_string()))?;
+            .map_err(|e| TransDbError::NetworkError(e.to_string()))?;
 
         let status = response.status();
         if !status.is_success() {
@@ -179,9 +179,9 @@ async fn parse_error_response(
     status: reqwest::StatusCode,
     key: &str,
     response: reqwest::Response,
-) -> TranDbError {
+) -> TransDbError {
     if status == reqwest::StatusCode::NOT_FOUND {
-        return TranDbError::KeyNotFound(key.to_string());
+        return TransDbError::KeyNotFound(key.to_string());
     }
 
     let error_msg = response
@@ -190,5 +190,5 @@ async fn parse_error_response(
         .map(|r| r.error)
         .unwrap_or_else(|_| format!("Server returned status: {}", status));
 
-    TranDbError::HttpError(status.as_u16(), error_msg)
+    TransDbError::HttpError(status.as_u16(), error_msg)
 }

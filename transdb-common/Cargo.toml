@@ -1,15 +1,10 @@
 [package]
-name = "trandb-server"
+name = "transdb-common"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
 [dependencies]
-trandb-common = { path = "../trandb-common" }
-axum = "0.7"
-tokio = { version = "1.0", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-
-[dev-dependencies]
+thiserror = "1.0"

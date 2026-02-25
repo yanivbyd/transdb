@@ -3,8 +3,8 @@ use axum::extract::{Path, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use trandb_common::{MAX_KEY_SIZE, MAX_VALUE_SIZE};
-use trandb_server::{
+use transdb_common::{MAX_KEY_SIZE, MAX_VALUE_SIZE};
+use transdb_server::{
     handle_delete, handle_get, handle_put, AppState, Clock, Entry, Server, ServerConfig,
 };
 

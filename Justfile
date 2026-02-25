@@ -11,4 +11,4 @@ coverage:
     LLVM_COV={{llvm_cov}} LLVM_PROFDATA={{llvm_profdata}} cargo llvm-cov --open
 
 integration-test:
-    cargo test -p trandb-integration-tests
+    cargo test -p transdb-integration-tests

@@ -1,9 +1,9 @@
 use std::time::Duration;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
-use trandb_client::{Client, ClientConfig};
-use trandb_common::{ErrorResponse, TranDbError, MAX_KEY_SIZE, MAX_VALUE_SIZE};
-use trandb_server::{Server, ServerConfig};
+use transdb_client::{Client, ClientConfig};
+use transdb_common::{ErrorResponse, TransDbError, MAX_KEY_SIZE, MAX_VALUE_SIZE};
+use transdb_server::{Server, ServerConfig};
 
 const SERVER_READY_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -32,8 +32,8 @@ async fn start_server() -> Client {
 async fn test_get_returns_key_not_found() {
     let client = start_server().await;
 
-    assert!(matches!(client.get("some_key").await, Err(TranDbError::KeyNotFound(_))));
-    assert!(matches!(client.get_allowing_expired("some_key").await, Err(TranDbError::KeyNotFound(_))));
+    assert!(matches!(client.get("some_key").await, Err(TransDbError::KeyNotFound(_))));
+    assert!(matches!(client.get_allowing_expired("some_key").await, Err(TransDbError::KeyNotFound(_))));
 }
 
 #[tokio::test]
@@ -68,7 +68,7 @@ async fn test_delete_removes_existing_key() {
     client.delete("my_key").await.expect("delete failed");
 
     let after = client.get("my_key").await;
-    assert!(matches!(after, Err(TranDbError::KeyNotFound(k)) if k == "my_key"));
+    assert!(matches!(after, Err(TransDbError::KeyNotFound(k)) if k == "my_key"));
 }
 
 #[tokio::test]
@@ -348,7 +348,7 @@ async fn test_client_rejects_oversized_key_without_contacting_server() {
     let result = client.get(&oversized_key).await;
 
     // Must be KeyTooLarge (pre-flight), not NetworkError (would mean a connection was attempted)
-    assert!(matches!(result, Err(TranDbError::KeyTooLarge(_))));
+    assert!(matches!(result, Err(TransDbError::KeyTooLarge(_))));
 }
 
 #[tokio::test]
@@ -362,7 +362,7 @@ async fn test_client_rejects_oversized_value_without_contacting_server() {
     let result = client.put("my_key", &oversized_value).await;
 
     // Must be ValueTooLarge (pre-flight), not NetworkError (would mean a connection was attempted)
-    assert!(matches!(result, Err(TranDbError::ValueTooLarge(_))));
+    assert!(matches!(result, Err(TransDbError::ValueTooLarge(_))));
 }
 
 // --- TTL ---
@@ -376,7 +376,7 @@ async fn test_expired_entry_behavior() {
     assert_eq!(version, 1);
 
     // Strong guarantee: expired entry is treated as not found
-    assert!(matches!(client.get("ttl_key").await, Err(TranDbError::KeyNotFound(_))));
+    assert!(matches!(client.get("ttl_key").await, Err(TransDbError::KeyNotFound(_))));
 
     // Soft guarantee: expired entry is returned with expired=true
     let result = client.get_allowing_expired("ttl_key").await.expect("get_allowing_expired failed");

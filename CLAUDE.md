@@ -16,7 +16,7 @@ When the user is ready to commit, they will ask for a commit message suggestion.
 
 ## Project Overview
 
-This is TranDB, a distributed in-memory key-value database written in Rust. See SPEC.md for full project specifications.
+This is TransDB, a distributed in-memory key-value database written in Rust. See SPEC.md for full project specifications.
 
 ## Development Guidelines
 

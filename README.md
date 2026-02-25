@@ -1,4 +1,4 @@
-# TranDB
+# TransDB
 
 A distributed, in-memory key-value database with transaction support, written in Rust. Built incrementally, starting with a single-node MVP and expanding toward multi-node distribution and transactions.
 
@@ -24,10 +24,10 @@ PUT overwrites silently if the key already exists. DELETE is idempotent — dele
 ## Project Structure
 
 ```
-trandb-server/            HTTP server with in-memory store
-trandb-client/            Rust client library
-trandb-common/            Shared types and error definitions
-trandb-integration-tests/ End-to-end tests
+transdb-server/            HTTP server with in-memory store
+transdb-client/            Rust client library
+transdb-common/            Shared types and error definitions
+transdb-integration-tests/ End-to-end tests
 ```
 
 ## Running

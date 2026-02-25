@@ -4,9 +4,9 @@ use thiserror::Error;
 pub const MAX_KEY_SIZE: usize = 1_024;
 pub const MAX_VALUE_SIZE: usize = 4_194_304;
 
-/// Error types for TranDB operations
+/// Error types for TransDB operations
 #[derive(Debug, Error, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum TranDbError {
+pub enum TransDbError {
     #[error("Key not found: {0}")]
     KeyNotFound(String),
 
@@ -32,5 +32,5 @@ pub struct ErrorResponse {
     pub error: String,
 }
 
-/// Result type for TranDB operations
-pub type Result<T> = std::result::Result<T, TranDbError>;
+/// Result type for TransDB operations
+pub type Result<T> = std::result::Result<T, TransDbError>;

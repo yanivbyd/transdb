@@ -1,14 +1,14 @@
 [workspace]
 members = [
-    "trandb-server",
-    "trandb-client",
-    "trandb-common",
-    "trandb-integration-tests",
+    "transdb-server",
+    "transdb-client",
+    "transdb-common",
+    "transdb-integration-tests",
 ]
 resolver = "2"
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-authors = ["TranDB Contributors"]
+authors = ["TransDB Contributors"]
 license = "MIT OR Apache-2.0"
