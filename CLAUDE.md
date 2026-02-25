@@ -48,3 +48,9 @@ Specifications are developed iteratively through collaboration:
 - Continue iterating until the spec is finalized
 
 **Key Principle:** Each revision should cleanly incorporate feedback. Questions remain visible alongside their answers until the spec is finalized.
+
+**Commit Plan:**
+- Each finalized spec must include a "Commit Plan" section at the end
+- Split along meaningful boundaries (e.g. shared-crate changes before dependents, proto schema before service logic). Avoid micro-commits for trivial changes; avoid bundling unrelated work into one giant commit
+- Each commit must include its own tests — never commit code without the tests for that code
+- Each commit entry should follow the format: `<action>: <brief description>` with a one-sentence explanation of what it contains
