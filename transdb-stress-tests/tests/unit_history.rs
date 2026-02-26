@@ -128,6 +128,7 @@ fn test_no_violation_when_get_overlaps_with_put() {
 fn test_stale_data_after_delete_acked() {
     // Timeline: PUT → DELETE_ack → GET_start → GET returns the deleted value.
     // Classified as stale (eventual consistency), not a hard error.
+    // The tombstone's version (2) IS the latest_known_version.
     let (t0, t1, t2, t3, t4, _) = ts6();
     let h = History(vec![
         put("k", 1, b"hello", t0, t1),
@@ -138,7 +139,7 @@ fn test_stale_data_after_delete_acked() {
     assert_eq!(v.len(), 1);
     assert!(matches!(
         &v[0].kind,
-        ViolationKind::StaleDataReturned { latest_known_version: None }
+        ViolationKind::StaleDataReturned { latest_known_version: 2 }
     ));
 }
 
@@ -157,74 +158,117 @@ fn test_no_violation_get_overlaps_with_delete() {
 
 #[test]
 fn test_no_violation_after_delete_then_reput() {
-    // DELETE then re-PUT with same version (version resets).
-    // Case A: GET reads the second PUT's value.
+    // DELETE then re-PUT with global versions (v=1, v=2 tombstone, v=3 re-PUT).
+    // Case A: GET reads the re-PUT's value.
     let (t0, t1, t2, t3, t4, t5, t6) = ts7();
     let h = History(vec![
         put("k", 1, b"first", t0, t1),
         delete("k", 2, t1, t2),
-        put("k", 1, b"second", t3, t4),
-        get("k", 1, b"second", t5, t6),
+        put("k", 3, b"second", t3, t4),
+        get("k", 3, b"second", t5, t6),
     ]);
     assert!(h.check_correctness().is_empty());
 
-    // Case B: GET reads the *first* PUT's value, then DELETE and re-PUT happen later.
-    // The write_index must not confuse the two (key, version=1) entries: the GET correctly
-    // observed the first PUT, even though a second PUT with the same version came later.
+    // Case B: GET reads the first PUT's value before DELETE and re-PUT start.
+    // No newer write was acked before GET started.
     let (t0, t1, t2, t3, t4, t5, t6, t7) = ts8();
     let h = History(vec![
         put("k", 1, b"first", t0, t1),
         get("k", 1, b"first", t2, t3),
         delete("k", 2, t4, t5),
-        put("k", 1, b"second", t6, t7),
+        put("k", 3, b"second", t6, t7),
     ]);
     assert!(h.check_correctness().is_empty());
+}
+
+// --- Stale after tombstone and re-PUT ---
+
+#[test]
+fn test_stale_after_tombstone_and_reput() {
+    // PUT v=1, DELETE v=2 (tombstone), PUT v=3 — all acked.
+    // GET v=1 after all done → stale with latest_known_version = 3 (the re-PUT, not the tombstone).
+    let (t0, t1, t2, t3, t4, t5, t6, t7) = ts8();
+    let h = History(vec![
+        put("k", 1, b"first", t0, t1),
+        delete("k", 2, t1, t2),
+        put("k", 3, b"second", t3, t4),
+        get("k", 1, b"first", t5, t6),
+    ]);
+    let v = h.check_correctness();
+    assert_eq!(v.len(), 1);
+    // latest_known_version is 3 (the re-PUT, which acked before GET started).
+    // Tombstone v=2 is also newer, but v=3 is the maximum.
+    assert!(matches!(
+        &v[0].kind,
+        ViolationKind::StaleDataReturned { latest_known_version: 3 }
+    ));
+    let _ = t7; // unused
 }
 
 // --- Ack order ≠ server execution order ---
 
 #[test]
 fn test_no_violation_when_later_ack_does_not_mean_later_write() {
-    // Network-delay scenario: PUT_A starts first but acks last because of a slow network.
-    // Meanwhile DELETE and PUT_B complete in between, so the server's final value is b"second".
+    // With global versions each write gets a unique version, so there is no
+    // disambiguation ambiguity. This test verifies that a GET correctly reads
+    // the latest PUT even when an earlier PUT acked after the later ones.
     //
     // Timeline (client-side):
-    //   t0: PUT_A starts        (slow path — acks at t5)
-    //   t1: DELETE starts
-    //   t2: DELETE acks
-    //   t3: PUT_B starts        (fast path — acks at t4)
-    //   t4: PUT_B acks
-    //   t5: PUT_A acks          (delayed; PUT_A was processed *first* on the server)
-    //   t6: GET starts
-    //   t7: GET acks  →  returns (v=1, b"second")  [correct: PUT_B is the last write]
-    //
-    // Bug: max_by_key(put_ack_ts) picks PUT_A (ack=t5 > t4) and compares its value
-    // b"first" against the GET's b"second", producing a false ValueMismatch.
+    //   t0: PUT v=1 starts        (slow path — acks at t5)
+    //   t1: DELETE v=2 starts
+    //   t2: DELETE v=2 acks
+    //   t3: PUT v=3 starts        (fast path — acks at t4)
+    //   t4: PUT v=3 acks
+    //   t5: PUT v=1 acks          (delayed, but server assigned v=1 first)
+    //   t6: GET v=3 starts
+    //   t7: GET v=3 acks  →  returns (v=3, b"second")  [correct: v=3 is the latest]
     let (t0, t1, t2, t3, t4, t5, t6, t7) = ts8();
     let h = History(vec![
-        put("k", 1, b"first",  t0, t5),  // PUT_A: early start, late ack
+        put("k", 1, b"first",  t0, t5),  // PUT v=1: early start, late ack
         delete("k", 2,          t1, t2),
-        put("k", 1, b"second", t3, t4),  // PUT_B: after DELETE, acks before PUT_A
-        get("k", 1, b"second", t6, t7),  // GET: correctly reads PUT_B
+        put("k", 3, b"second", t3, t4),  // PUT v=3: after DELETE, acks before PUT v=1
+        get("k", 3, b"second", t6, t7),  // GET: correctly reads v=3
     ]);
     assert!(h.check_correctness().is_empty());
 }
 
-// --- DELETE overlapping PUT ---
+// --- DELETE overlapping PUT → now a stale violation ---
 
 #[test]
-fn test_no_stale_when_delete_overlaps_with_put() {
+fn test_stale_when_delete_acks_before_get_starts() {
     // Timeline: PUT_start(t0) → DELETE_start(t1) → PUT_ack(t2) → DELETE_ack(t3) → GET_start(t4)
-    // The DELETE started while the PUT was still in-flight, so it did not definitively
-    // supersede the PUT — the server may have processed them in either order.
-    // A GET returning the PUT value is therefore not a stale violation.
+    // The DELETE (v=2) was fully acked before the GET started, so the server had
+    // definitely advanced past v=1 by the time the client issued the GET.
+    // GET returning v=1 is therefore stale.
     let (t0, t1, t2, t3, t4, t5) = ts6();
     let h = History(vec![
         put("k", 1, b"hello", t0, t2),  // PUT: t0..t2
         delete("k", 2, t1, t3),          // DELETE: t1..t3  (starts during PUT)
         get("k", 1, b"hello", t4, t5),   // GET: after DELETE acked
     ]);
-    assert!(h.check_correctness().is_empty());
+    let v = h.check_correctness();
+    assert_eq!(v.len(), 1);
+    assert!(matches!(
+        &v[0].kind,
+        ViolationKind::StaleDataReturned { latest_known_version: 2 }
+    ));
+}
+
+// --- GET returning data for a tombstone version ---
+
+#[test]
+fn test_version_not_found_when_get_returns_data_for_tombstone_version() {
+    // A GET claims it read data at the same version as a tombstone (DELETE).
+    // This cannot happen in a correct system (server returns 404 for tombstones),
+    // but the checker must still report VersionNotFound.
+    let (t0, t1, t2, t3, _, _) = ts6();
+    let h = History(vec![
+        delete("k", 1, t0, t1),
+        get("k", 1, b"phantom", t2, t3),
+    ]);
+    let v = h.check_correctness();
+    assert_eq!(v.len(), 1);
+    assert!(matches!(&v[0].kind, ViolationKind::VersionNotFound { actual } if actual == b"phantom"));
 }
 
 // --- ValueMismatch ---
@@ -260,7 +304,7 @@ fn test_stale_data_returned_when_newer_version_was_acked() {
     assert_eq!(v.len(), 1);
     assert!(matches!(
         &v[0].kind,
-        ViolationKind::StaleDataReturned { latest_known_version: Some(2) }
+        ViolationKind::StaleDataReturned { latest_known_version: 2 }
     ));
 }
 
