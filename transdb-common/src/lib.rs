@@ -10,8 +10,9 @@ pub const MAX_VALUE_SIZE: usize = 4_194_304;
 /// A single-node deployment omits `replica_addr`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Topology {
-    pub primary_addr: String,
-    pub replica_addr: Option<String>,
+    pub primary_addr:      String,
+    pub replica_addr:      Option<String>,
+    pub replica_grpc_addr: Option<String>, // gRPC address of the replica (host:port)
 }
 
 /// Error types for TransDB operations

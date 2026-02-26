@@ -45,6 +45,7 @@ async fn start_cluster() -> Cluster {
     let topology = Topology {
         primary_addr: primary_addr.to_string(),
         replica_addr: Some(replica_addr.to_string()),
+        replica_grpc_addr: None,
     };
 
     let primary = Client::new(ClientConfig { topology: topology.clone() });
@@ -365,7 +366,7 @@ async fn test_server_rejects_oversized_key_on_get() {
 async fn test_client_rejects_oversized_key_without_contacting_server() {
     // Uses an unbound address — if the client pre-flight works, no connection is attempted
     let client = Client::new(ClientConfig {
-        topology: Topology { primary_addr: "127.0.0.1:59212".to_string(), replica_addr: None },
+        topology: Topology { primary_addr: "127.0.0.1:59212".to_string(), replica_addr: None, replica_grpc_addr: None },
     });
     let oversized_key = "a".repeat(MAX_KEY_SIZE + 1);
 
@@ -379,7 +380,7 @@ async fn test_client_rejects_oversized_key_without_contacting_server() {
 async fn test_client_rejects_oversized_value_without_contacting_server() {
     // Uses an unbound address — if the client pre-flight works, no connection is attempted
     let client = Client::new(ClientConfig {
-        topology: Topology { primary_addr: "127.0.0.1:59212".to_string(), replica_addr: None },
+        topology: Topology { primary_addr: "127.0.0.1:59212".to_string(), replica_addr: None, replica_grpc_addr: None },
     });
     let oversized_value = vec![0u8; MAX_VALUE_SIZE + 1];
 

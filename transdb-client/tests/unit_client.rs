@@ -4,20 +4,20 @@ use transdb_common::{Topology, TransDbError, MAX_KEY_SIZE, MAX_VALUE_SIZE};
 // Helper: build a ClientConfig aimed at the given mockito server URL (strips the http:// prefix).
 fn primary_config(server_url: &str) -> ClientConfig {
     let addr = server_url.trim_start_matches("http://").to_string();
-    ClientConfig { topology: Topology { primary_addr: addr, replica_addr: None } }
+    ClientConfig { topology: Topology { primary_addr: addr, replica_addr: None, replica_grpc_addr: None } }
 }
 
 // Helper: a client pointed at localhost:8080 for tests that never actually connect.
 fn localhost_client() -> Client {
     Client::new(ClientConfig {
-        topology: Topology { primary_addr: "127.0.0.1:8080".to_string(), replica_addr: None },
+        topology: Topology { primary_addr: "127.0.0.1:8080".to_string(), replica_addr: None, replica_grpc_addr: None },
     })
 }
 
 #[test]
 fn test_client_config_custom() {
     let config = ClientConfig {
-        topology: Topology { primary_addr: "localhost:9000".to_string(), replica_addr: None },
+        topology: Topology { primary_addr: "localhost:9000".to_string(), replica_addr: None, replica_grpc_addr: None },
     };
     assert_eq!(config.topology.primary_addr, "localhost:9000");
 }
@@ -25,7 +25,7 @@ fn test_client_config_custom() {
 #[test]
 fn test_client_creation_with_config() {
     let config = ClientConfig {
-        topology: Topology { primary_addr: "example.com:3000".to_string(), replica_addr: None },
+        topology: Topology { primary_addr: "example.com:3000".to_string(), replica_addr: None, replica_grpc_addr: None },
     };
     let client = Client::new(config);
     assert_eq!(client.config.topology.primary_addr, "example.com:3000");
@@ -43,7 +43,7 @@ fn test_build_key_url() {
 #[test]
 fn test_build_key_url_with_custom_base() {
     let config = ClientConfig {
-        topology: Topology { primary_addr: "localhost:9000".to_string(), replica_addr: None },
+        topology: Topology { primary_addr: "localhost:9000".to_string(), replica_addr: None, replica_grpc_addr: None },
     };
     let client = Client::new(config);
     assert_eq!(
@@ -76,6 +76,7 @@ fn test_set_target_changes_url() {
         topology: Topology {
             primary_addr: "127.0.0.1:3000".to_string(),
             replica_addr: Some("127.0.0.1:3001".to_string()),
+            replica_grpc_addr: None,
         },
     };
     let mut client = Client::new(config);
@@ -329,7 +330,7 @@ async fn test_delete_returns_http_error_on_503() {
 async fn test_get_returns_network_error_when_server_unreachable() {
     // Port 59210 is not bound to anything — connection will be refused immediately
     let client = Client::new(ClientConfig {
-        topology: Topology { primary_addr: "127.0.0.1:59210".to_string(), replica_addr: None },
+        topology: Topology { primary_addr: "127.0.0.1:59210".to_string(), replica_addr: None, replica_grpc_addr: None },
     });
     let result = client.get("any_key").await;
 

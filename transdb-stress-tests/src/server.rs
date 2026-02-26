@@ -77,6 +77,7 @@ impl Cluster {
         let topology = Topology {
             primary_addr: primary_addr.to_string(),
             replica_addr: Some(replica_addr.to_string()),
+            replica_grpc_addr: None,
         };
         let tmpfile =
             NamedTempFile::new().map_err(|e| format!("Failed to create topology tmpfile: {e}"))?;
