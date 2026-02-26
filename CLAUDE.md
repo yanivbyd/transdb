@@ -21,6 +21,7 @@ This is TransDB, a distributed in-memory key-value database written in Rust. See
 ## Development Guidelines
 
 **Testing Requirements:**
+- Development follows **TDD**: write the failing tests first, get user approval, then implement
 - Every code change MUST include corresponding unit tests
 - Tests should cover new functionality, edge cases, and error conditions
 - Code without tests is incomplete
@@ -48,6 +49,9 @@ Specifications are developed iteratively through collaboration:
 - Continue iterating until the spec is finalized
 
 **Key Principle:** Each revision should cleanly incorporate feedback. Questions remain visible alongside their answers until the spec is finalized.
+
+**Spec Length:**
+- The body of a finalized spec (excluding "Questions for Clarification" and "Commit Plan" sections) must not exceed **200 lines** (soft limit). Prefer concise prose over verbose code snippets.
 
 **Commit Plan:**
 - Each finalized spec must include a "Commit Plan" section at the end
