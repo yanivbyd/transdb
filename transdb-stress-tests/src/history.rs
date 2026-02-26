@@ -13,7 +13,7 @@ pub enum OpOutcome {
     PutOk { version: u64, value: Vec<u8> },
     GetOk { version: u64, value: Vec<u8> },
     NotFound,
-    DeleteOk,
+    DeleteOk { version: u64 },
     /// 5xx or network failure.
     Error,
 }
@@ -117,7 +117,7 @@ fn build_write_index(records: &[OpRecord]) -> HashMap<(String, u64), Vec<PutEntr
 fn build_delete_index(records: &[OpRecord]) -> HashMap<String, Vec<DeleteEntry>> {
     let mut index: HashMap<String, Vec<DeleteEntry>> = HashMap::new();
     for r in records {
-        if matches!(r.outcome, OpOutcome::DeleteOk) {
+        if matches!(r.outcome, OpOutcome::DeleteOk { .. }) {
             index.entry(r.key.clone()).or_default().push(DeleteEntry {
                 del_start_ts: r.client_start_ts,
                 del_ack_ts: r.client_ack_ts,

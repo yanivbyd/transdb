@@ -273,7 +273,8 @@ async fn test_put_returns_http_error_on_503() {
 }
 
 #[tokio::test]
-async fn test_delete_returns_ok_on_204() {
+async fn test_delete_returns_none_on_204() {
+    // 204 means the key was absent or already tombstoned — no version issued.
     let mut server = mockito::Server::new_async().await;
     server.mock("DELETE", "/keys/my_key")
         .with_status(204)
@@ -281,9 +282,33 @@ async fn test_delete_returns_ok_on_204() {
         .await;
 
     let client = Client::new(primary_config(&server.url()));
-    let result = client.delete("my_key").await;
+    assert_eq!(client.delete("my_key").await.unwrap(), None);
+}
 
-    assert!(result.is_ok());
+#[tokio::test]
+async fn test_delete_returns_some_version_on_200() {
+    // 200 means a tombstone was written — the version is returned in the ETag.
+    let mut server = mockito::Server::new_async().await;
+    server.mock("DELETE", "/keys/my_key")
+        .with_status(200)
+        .with_header("ETag", "\"7\"")
+        .create_async()
+        .await;
+
+    let client = Client::new(primary_config(&server.url()));
+    assert_eq!(client.delete("my_key").await.unwrap(), Some(7));
+}
+
+#[tokio::test]
+async fn test_delete_returns_missing_etag_error_on_200_without_etag() {
+    let mut server = mockito::Server::new_async().await;
+    server.mock("DELETE", "/keys/my_key")
+        .with_status(200)
+        .create_async()
+        .await;
+
+    let client = Client::new(primary_config(&server.url()));
+    assert!(matches!(client.delete("my_key").await, Err(TransDbError::MissingETag)));
 }
 
 #[tokio::test]

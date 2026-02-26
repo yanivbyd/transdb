@@ -138,8 +138,10 @@ impl Client {
         parse_etag(&response).ok_or(TransDbError::MissingETag)
     }
 
-    /// Delete the value stored under the given key (idempotent)
-    pub async fn delete(&self, key: &str) -> Result<()> {
+    /// Delete the value stored under the given key.
+    /// Returns `Some(version)` when a tombstone was written (`200 OK` + ETag),
+    /// or `None` when the key was absent or already deleted (`204 No Content`).
+    pub async fn delete(&self, key: &str) -> Result<Option<u64>> {
         if key.len() > MAX_KEY_SIZE {
             return Err(TransDbError::KeyTooLarge(MAX_KEY_SIZE));
         }
@@ -159,7 +161,12 @@ impl Client {
             return Err(parse_error_response(status, key, response).await);
         }
 
-        Ok(())
+        if status == reqwest::StatusCode::NO_CONTENT {
+            return Ok(None);
+        }
+
+        // 200 OK — a tombstone was written; ETag carries the version.
+        parse_etag(&response).map(Some).ok_or(TransDbError::MissingETag)
     }
 }
 

@@ -78,8 +78,8 @@ async fn execute_op(
         }
         Op::Delete => {
             let outcome = match client.delete(key).await {
-                Ok(()) => OpOutcome::DeleteOk,
-                Err(TransDbError::KeyNotFound(_)) => OpOutcome::NotFound,
+                Ok(Some(version)) => OpOutcome::DeleteOk { version },
+                Ok(None) => OpOutcome::NotFound,
                 Err(_) => OpOutcome::Error,
             };
             (OpKind::Delete, outcome)

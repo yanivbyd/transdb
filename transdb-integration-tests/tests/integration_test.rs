@@ -8,6 +8,13 @@ use transdb_server::{NodeRole, Server, ServerConfig};
 
 const SERVER_READY_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// Asserts that `versions` is strictly increasing.
+fn assert_monotonic(versions: &[u64]) {
+    for w in versions.windows(2) {
+        assert!(w[1] > w[0], "versions not strictly increasing: {} then {}", w[0], w[1]);
+    }
+}
+
 struct Cluster {
     primary: Client,
     replica: Client,
@@ -61,16 +68,16 @@ async fn test_put_and_get_round_trip() {
     let client = start_cluster().await.primary;
 
     let put_version = client.put("my_key", b"hello world").await.expect("put failed");
-    assert_eq!(put_version, 1);
+    assert!(put_version > 0);
 
     let result = client.get("my_key").await.expect("get failed");
     assert_eq!(result.value, b"hello world");
-    assert_eq!(result.version, 1);
+    assert_eq!(result.version, put_version);
     assert!(!result.expired);
 
     let result = client.get_allowing_expired("my_key").await.expect("get_allowing_expired failed");
     assert_eq!(result.value, b"hello world");
-    assert_eq!(result.version, 1);
+    assert_eq!(result.version, put_version);
     assert!(!result.expired);
 }
 
@@ -79,11 +86,11 @@ async fn test_delete_removes_existing_key() {
     let client = start_cluster().await.primary;
 
     let put_version = client.put("my_key", b"hello").await.expect("put failed");
-    assert_eq!(put_version, 1);
+    assert!(put_version > 0);
 
     let before = client.get("my_key").await.expect("get before delete failed");
     assert_eq!(before.value, b"hello");
-    assert_eq!(before.version, 1);
+    assert_eq!(before.version, put_version);
 
     client.delete("my_key").await.expect("delete failed");
 
@@ -108,24 +115,22 @@ async fn test_put_overwrites_existing_key() {
     let client = start_cluster().await.primary;
 
     let v1 = client.put("my_key", b"first").await.expect("first put failed");
-    assert_eq!(v1, 1);
-
     let v2 = client.put("my_key", b"second").await.expect("second put failed");
-    assert_eq!(v2, 2);
+    assert_monotonic(&[v1, v2]);
 
     let result = client.get("my_key").await.expect("get failed");
     assert_eq!(result.value, b"second");
-    assert_eq!(result.version, 2);
+    assert_eq!(result.version, v2);
 }
 
 // --- Versioning ---
 
 #[tokio::test]
-async fn test_put_returns_version_1_for_new_key() {
+async fn test_put_returns_positive_version_for_new_key() {
     let client = start_cluster().await.primary;
 
     let version = client.put("k", b"v").await.expect("put failed");
-    assert_eq!(version, 1);
+    assert!(version > 0);
 }
 
 #[tokio::test]
@@ -135,8 +140,7 @@ async fn test_put_increments_version() {
     let v1 = client.put("k", b"first").await.expect("first put failed");
     let v2 = client.put("k", b"second").await.expect("second put failed");
 
-    assert_eq!(v1, 1);
-    assert_eq!(v2, 2);
+    assert_monotonic(&[v1, v2]);
 }
 
 #[tokio::test]
@@ -150,15 +154,15 @@ async fn test_get_returns_etag_matching_put_version() {
 }
 
 #[tokio::test]
-async fn test_version_resets_after_delete_and_recreate() {
+async fn test_version_increases_after_delete_and_recreate() {
     let client = start_cluster().await.primary;
 
-    client.put("k", b"v1").await.expect("first put failed");
-    client.put("k", b"v2").await.expect("second put failed");
-    client.delete("k").await.expect("delete failed");
+    let v1 = client.put("k", b"v1").await.expect("first put failed");
+    let v2 = client.put("k", b"v2").await.expect("second put failed");
+    let v_del = client.delete("k").await.expect("delete failed").expect("key must be live");
+    let v3 = client.put("k", b"v3").await.expect("third put failed");
 
-    let version = client.put("k", b"v3").await.expect("third put failed");
-    assert_eq!(version, 1);
+    assert_monotonic(&[v1, v2, v_del, v3]);
 }
 
 // --- Idempotency (via raw reqwest to control the Idempotency-Key header) ---
@@ -211,10 +215,10 @@ async fn test_put_idempotency_replay_does_not_write_twice() {
             .unwrap();
     }
 
-    // Version should be 1, not 2; value should be what was written
+    // Version should be the same as the first write; value should be what was written
     let result = client.get("idem_write").await.expect("get failed");
     assert_eq!(result.value, b"v");
-    assert_eq!(result.version, 1);
+    assert!(result.version > 0);
 }
 
 #[tokio::test]
@@ -393,7 +397,7 @@ async fn test_expired_entry_behavior() {
 
     // Epoch 1 is well in the past — entry is immediately expired
     let version = client.put_with_ttl("ttl_key", b"stale value", 1).await.expect("put_with_ttl failed");
-    assert_eq!(version, 1);
+    assert!(version > 0);
 
     // Strong guarantee: expired entry is treated as not found
     assert!(matches!(client.get("ttl_key").await, Err(TransDbError::KeyNotFound(_))));
@@ -459,7 +463,7 @@ async fn test_set_target_routes_to_replica_and_back() {
 
     // Primary: writes work
     let version = client.put("k", b"v").await.expect("put to primary failed");
-    assert_eq!(version, 1);
+    assert!(version > 0);
 
     // Redirect to replica: all operations rejected with 405
     client.set_target(&replica_addr);

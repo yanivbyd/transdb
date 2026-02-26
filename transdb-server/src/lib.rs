@@ -9,12 +9,13 @@ use axum::{
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
 use tokio::time::timeout;
 use transdb_common::{ErrorResponse, Topology, MAX_KEY_SIZE, MAX_VALUE_SIZE};
 
-const LOCK_TIMEOUT: Duration = Duration::from_secs(1);
+pub mod config;
+use config::{LOCK_TIMEOUT, TOMBSTONE_TTL_SECS};
 
 /// Abstraction over current time for testability.
 pub trait Clock: Send + Sync {
@@ -42,7 +43,7 @@ pub enum NodeRole {
 
 #[derive(Clone, Debug)]
 pub struct Entry {
-    pub value: Bytes,
+    pub value: Option<Bytes>, // None = tombstone
     pub version: u64,
     pub expires_at: Option<u64>,
 }
@@ -75,6 +76,7 @@ pub struct IdempotencyRecord {
 pub struct DbState {
     pub store: HashMap<String, Entry>,
     pub idempotency_cache: HashMap<String, IdempotencyRecord>,
+    pub next_version: u64,
 }
 
 pub type Db = Arc<RwLock<DbState>>;
@@ -92,6 +94,7 @@ impl AppState {
             db: Arc::new(RwLock::new(DbState {
                 store: HashMap::new(),
                 idempotency_cache: HashMap::new(),
+                next_version: 0,
             })),
             clock,
             role,
@@ -182,7 +185,11 @@ fn verify_and_build_cached_delete(record: &IdempotencyRecord, key: &str) -> Resp
             "Idempotency-Key was already used for a different method or key path",
         );
     }
-    StatusCode::NO_CONTENT.into_response()
+    // Idempotency records for DELETE are only written when a tombstone is written (200 path),
+    // so etag is always Some here.
+    let mut response = StatusCode::OK.into_response();
+    response.headers_mut().insert(header::ETAG, etag_value(record.etag.unwrap()));
+    response
 }
 
 /// Handler for GET /keys/:key — returns the value and ETag (version) if found, 404 if not.
@@ -205,16 +212,19 @@ pub async fn handle_get(State(state): State<AppState>, Path(key): Path<String>) 
     };
 
     match db_guard.store.get(&key) {
+        None | Some(Entry { value: None, .. }) => {
+            error_response(StatusCode::NOT_FOUND, format!("Key not found: {}", key))
+        }
         Some(entry) => {
             let expired = entry.is_expired(state.clock.as_ref());
-            let mut response = (StatusCode::OK, entry.value.clone()).into_response();
+            let value = entry.value.clone().unwrap();
+            let mut response = (StatusCode::OK, value).into_response();
             response.headers_mut().insert(header::ETAG, etag_value(entry.version));
             if expired {
                 response.headers_mut().insert("x-expired", HeaderValue::from_static("true"));
             }
             response
         }
-        None => error_response(StatusCode::NOT_FOUND, format!("Key not found: {}", key)),
     }
 }
 
@@ -265,15 +275,9 @@ pub async fn handle_put(
         return verify_and_build_cached_put(record, &key);
     }
 
-    let entry = db_guard.store.entry(key.clone()).or_insert_with(|| Entry {
-        value: Bytes::new(),
-        version: 0,
-        expires_at: None,
-    });
-    entry.version += 1;
-    entry.value = body;
-    entry.expires_at = expires_at;
-    let version = entry.version;
+    db_guard.next_version += 1;
+    let version = db_guard.next_version;
+    db_guard.store.insert(key.clone(), Entry { value: Some(body), version, expires_at });
 
     let record = IdempotencyRecord {
         method: HttpMethod::Put,
@@ -320,16 +324,26 @@ pub async fn handle_delete(
         return verify_and_build_cached_delete(record, &key);
     }
 
-    db_guard.store.remove(&key);
+    match db_guard.store.get(&key) {
+        None | Some(Entry { value: None, .. }) => return StatusCode::NO_CONTENT.into_response(),
+        _ => {}
+    }
+
+    db_guard.next_version += 1;
+    let version = db_guard.next_version;
+    let now = state.clock.unix_now_secs();
+    db_guard.store.insert(key.clone(), Entry { value: None, version, expires_at: Some(now + TOMBSTONE_TTL_SECS) });
 
     let record = IdempotencyRecord {
         method: HttpMethod::Delete,
         key_path: key,
-        status_code: 204,
-        etag: None,
+        status_code: 200,
+        etag: Some(version),
         created_at: Instant::now(),
     };
     db_guard.idempotency_cache.insert(idempotency_key, record);
 
-    StatusCode::NO_CONTENT.into_response()
+    let mut response = StatusCode::OK.into_response();
+    response.headers_mut().insert(header::ETAG, etag_value(version));
+    response
 }

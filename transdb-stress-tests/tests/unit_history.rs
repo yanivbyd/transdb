@@ -21,13 +21,13 @@ fn get(key: &str, version: u64, value: &[u8], start: Instant, ack: Instant) -> O
     }
 }
 
-fn delete(key: &str, start: Instant, ack: Instant) -> OpRecord {
+fn delete(key: &str, version: u64, start: Instant, ack: Instant) -> OpRecord {
     OpRecord {
         client_start_ts: start,
         client_ack_ts: ack,
         key: key.to_string(),
         kind: OpKind::Delete,
-        outcome: OpOutcome::DeleteOk,
+        outcome: OpOutcome::DeleteOk { version },
     }
 }
 
@@ -131,7 +131,7 @@ fn test_stale_data_after_delete_acked() {
     let (t0, t1, t2, t3, t4, _) = ts6();
     let h = History(vec![
         put("k", 1, b"hello", t0, t1),
-        delete("k", t1, t2),
+        delete("k", 2, t1, t2),
         get("k", 1, b"hello", t3, t4),
     ]);
     let v = h.check_correctness();
@@ -149,7 +149,7 @@ fn test_no_violation_get_overlaps_with_delete() {
     let (t0, t1, t2, t3, t4, _) = ts6();
     let h = History(vec![
         put("k", 1, b"hello", t0, t1),
-        delete("k", t1, t3),
+        delete("k", 2, t1, t3),
         get("k", 1, b"hello", t2, t4),
     ]);
     assert!(h.check_correctness().is_empty());
@@ -162,7 +162,7 @@ fn test_no_violation_after_delete_then_reput() {
     let (t0, t1, t2, t3, t4, t5, t6) = ts7();
     let h = History(vec![
         put("k", 1, b"first", t0, t1),
-        delete("k", t1, t2),
+        delete("k", 2, t1, t2),
         put("k", 1, b"second", t3, t4),
         get("k", 1, b"second", t5, t6),
     ]);
@@ -175,7 +175,7 @@ fn test_no_violation_after_delete_then_reput() {
     let h = History(vec![
         put("k", 1, b"first", t0, t1),
         get("k", 1, b"first", t2, t3),
-        delete("k", t4, t5),
+        delete("k", 2, t4, t5),
         put("k", 1, b"second", t6, t7),
     ]);
     assert!(h.check_correctness().is_empty());
@@ -203,7 +203,7 @@ fn test_no_violation_when_later_ack_does_not_mean_later_write() {
     let (t0, t1, t2, t3, t4, t5, t6, t7) = ts8();
     let h = History(vec![
         put("k", 1, b"first",  t0, t5),  // PUT_A: early start, late ack
-        delete("k",             t1, t2),
+        delete("k", 2,          t1, t2),
         put("k", 1, b"second", t3, t4),  // PUT_B: after DELETE, acks before PUT_A
         get("k", 1, b"second", t6, t7),  // GET: correctly reads PUT_B
     ]);
@@ -221,7 +221,7 @@ fn test_no_stale_when_delete_overlaps_with_put() {
     let (t0, t1, t2, t3, t4, t5) = ts6();
     let h = History(vec![
         put("k", 1, b"hello", t0, t2),  // PUT: t0..t2
-        delete("k", t1, t3),             // DELETE: t1..t3  (starts during PUT)
+        delete("k", 2, t1, t3),          // DELETE: t1..t3  (starts during PUT)
         get("k", 1, b"hello", t4, t5),   // GET: after DELETE acked
     ]);
     assert!(h.check_correctness().is_empty());
