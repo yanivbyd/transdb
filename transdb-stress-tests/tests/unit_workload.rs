@@ -1,6 +1,21 @@
 use transdb_stress_tests::workload::{Op, WorkloadProfile};
 
 #[test]
+fn test_from_name_roundtrip() {
+    for (name, expected) in [
+        ("read-heavy", WorkloadProfile::ReadHeavy),
+        ("balanced", WorkloadProfile::Balanced),
+        ("write-heavy", WorkloadProfile::WriteHeavy),
+        ("put-only", WorkloadProfile::PutOnly),
+    ] {
+        let parsed = WorkloadProfile::from_name(name);
+        assert_eq!(parsed, Some(expected), "from_name({name:?}) failed");
+        assert_eq!(expected.as_name(), name, "as_name() mismatch for {name:?}");
+    }
+    assert!(WorkloadProfile::from_name("unknown").is_none());
+}
+
+#[test]
 fn test_profile_boundaries() {
     // ReadHeavy: GET rolls 0–79, PUT rolls 80–99
     assert_eq!(WorkloadProfile::ReadHeavy.op_for_roll(0), Op::Get);

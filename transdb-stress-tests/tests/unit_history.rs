@@ -46,6 +46,11 @@ fn ts7() -> (Instant, Instant, Instant, Instant, Instant, Instant, Instant) {
     (t0, t1, t2, t3, t4, t5, after(t5))
 }
 
+fn ts8() -> (Instant, Instant, Instant, Instant, Instant, Instant, Instant, Instant) {
+    let (t0, t1, t2, t3, t4, t5, t6) = ts7();
+    (t0, t1, t2, t3, t4, t5, t6, after(t6))
+}
+
 // --- Basic ---
 
 #[test]
@@ -152,14 +157,72 @@ fn test_no_violation_get_overlaps_with_delete() {
 
 #[test]
 fn test_no_violation_after_delete_then_reput() {
-    // DELETE then re-PUT with same version (version resets). The re-PUT's start_ts
-    // is after the DELETE ack, so the delete does not supersede it.
+    // DELETE then re-PUT with same version (version resets).
+    // Case A: GET reads the second PUT's value.
     let (t0, t1, t2, t3, t4, t5, t6) = ts7();
     let h = History(vec![
         put("k", 1, b"first", t0, t1),
         delete("k", t1, t2),
-        put("k", 1, b"second", t3, t4), // overwrites write_index entry for (k,1)
+        put("k", 1, b"second", t3, t4),
         get("k", 1, b"second", t5, t6),
+    ]);
+    assert!(h.check_correctness().is_empty());
+
+    // Case B: GET reads the *first* PUT's value, then DELETE and re-PUT happen later.
+    // The write_index must not confuse the two (key, version=1) entries: the GET correctly
+    // observed the first PUT, even though a second PUT with the same version came later.
+    let (t0, t1, t2, t3, t4, t5, t6, t7) = ts8();
+    let h = History(vec![
+        put("k", 1, b"first", t0, t1),
+        get("k", 1, b"first", t2, t3),
+        delete("k", t4, t5),
+        put("k", 1, b"second", t6, t7),
+    ]);
+    assert!(h.check_correctness().is_empty());
+}
+
+// --- Ack order ≠ server execution order ---
+
+#[test]
+fn test_no_violation_when_later_ack_does_not_mean_later_write() {
+    // Network-delay scenario: PUT_A starts first but acks last because of a slow network.
+    // Meanwhile DELETE and PUT_B complete in between, so the server's final value is b"second".
+    //
+    // Timeline (client-side):
+    //   t0: PUT_A starts        (slow path — acks at t5)
+    //   t1: DELETE starts
+    //   t2: DELETE acks
+    //   t3: PUT_B starts        (fast path — acks at t4)
+    //   t4: PUT_B acks
+    //   t5: PUT_A acks          (delayed; PUT_A was processed *first* on the server)
+    //   t6: GET starts
+    //   t7: GET acks  →  returns (v=1, b"second")  [correct: PUT_B is the last write]
+    //
+    // Bug: max_by_key(put_ack_ts) picks PUT_A (ack=t5 > t4) and compares its value
+    // b"first" against the GET's b"second", producing a false ValueMismatch.
+    let (t0, t1, t2, t3, t4, t5, t6, t7) = ts8();
+    let h = History(vec![
+        put("k", 1, b"first",  t0, t5),  // PUT_A: early start, late ack
+        delete("k",             t1, t2),
+        put("k", 1, b"second", t3, t4),  // PUT_B: after DELETE, acks before PUT_A
+        get("k", 1, b"second", t6, t7),  // GET: correctly reads PUT_B
+    ]);
+    assert!(h.check_correctness().is_empty());
+}
+
+// --- DELETE overlapping PUT ---
+
+#[test]
+fn test_no_stale_when_delete_overlaps_with_put() {
+    // Timeline: PUT_start(t0) → DELETE_start(t1) → PUT_ack(t2) → DELETE_ack(t3) → GET_start(t4)
+    // The DELETE started while the PUT was still in-flight, so it did not definitively
+    // supersede the PUT — the server may have processed them in either order.
+    // A GET returning the PUT value is therefore not a stale violation.
+    let (t0, t1, t2, t3, t4, t5) = ts6();
+    let h = History(vec![
+        put("k", 1, b"hello", t0, t2),  // PUT: t0..t2
+        delete("k", t1, t3),             // DELETE: t1..t3  (starts during PUT)
+        get("k", 1, b"hello", t4, t5),   // GET: after DELETE acked
     ]);
     assert!(h.check_correctness().is_empty());
 }

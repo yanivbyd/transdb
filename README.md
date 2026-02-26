@@ -28,6 +28,7 @@ transdb-server/            HTTP server with in-memory store
 transdb-client/            Rust client library
 transdb-common/            Shared types and error definitions
 transdb-integration-tests/ End-to-end tests
+transdb-stress-tests/      Stress test harness (builds and drives a live cluster)
 ```
 
 ## Running
@@ -44,7 +45,19 @@ just build              # build all crates
 just test               # run all tests
 just integration-test   # run integration tests only
 just coverage           # run tests with coverage report (opens browser)
+just stress-test        # run stress tests with defaults (30 s, balanced workload)
 ```
+
+Stress test options (forwarded after `--`):
+
+```bash
+just stress-test --duration 60 --workload write-heavy --key-space 500
+just stress-test --max-error-rate 0.05 --max-violations 0
+```
+
+Available workload profiles: `read-heavy`, `balanced`, `write-heavy`, `put-only`.
+
+The harness builds the server binary itself, spawns a primary + replica cluster, runs the worker loop, then prints a pass/fail report. Exit codes: 0 = pass, 1 = error rate exceeded, 2 = correctness violations, 3 = server build/startup failed.
 
 > Requires [just](https://github.com/casey/just) (`brew install just`) and [cargo-llvm-cov](https://github.com/taiki-e/cargo-llvm-cov) (`cargo install cargo-llvm-cov`).
 

@@ -12,3 +12,6 @@ coverage:
 
 integration-test:
     cargo test -p transdb-integration-tests
+
+stress-test *ARGS:
+    cargo run -p transdb-stress-tests -- {{ARGS}}

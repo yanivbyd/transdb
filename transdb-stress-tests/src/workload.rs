@@ -30,6 +30,27 @@ impl WorkloadProfile {
         self.op_for_roll(roll)
     }
 
+    /// Parse a workload profile from its CLI name (e.g. `"balanced"`).
+    pub fn from_name(s: &str) -> Option<Self> {
+        match s {
+            "read-heavy" => Some(Self::ReadHeavy),
+            "balanced" => Some(Self::Balanced),
+            "write-heavy" => Some(Self::WriteHeavy),
+            "put-only" => Some(Self::PutOnly),
+            _ => None,
+        }
+    }
+
+    /// Return the canonical CLI name for this profile.
+    pub fn as_name(&self) -> &'static str {
+        match self {
+            Self::ReadHeavy => "read-heavy",
+            Self::Balanced => "balanced",
+            Self::WriteHeavy => "write-heavy",
+            Self::PutOnly => "put-only",
+        }
+    }
+
     /// Map a roll in `0..100` to an `Op` according to the profile's percentages.
     /// Exposed for deterministic testing.
     pub fn op_for_roll(&self, roll: u32) -> Op {
