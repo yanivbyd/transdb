@@ -1,0 +1,28 @@
+syntax = "proto3";
+package transdb.replication;
+
+message ReplicateBatchRequest { repeated MutationEntry entries = 1; }
+
+message MutationEntry {
+  uint64 seq = 1;
+  oneof operation { PutOp put = 2; DeleteOp delete = 3; }
+}
+
+message PutOp {
+  string key     = 1;
+  bytes  value   = 2;
+  uint64 version = 3;
+  optional uint64 expires_at = 4; // absent means no TTL
+}
+
+message DeleteOp {
+  string key        = 1;
+  uint64 version    = 2; // tombstone version
+  uint64 expires_at = 3; // tombstone TTL (absolute Unix epoch seconds)
+}
+
+message ReplicateBatchResponse { uint64 applied_through = 1; }
+
+service Replication {
+  rpc ReplicateBatch(ReplicateBatchRequest) returns (ReplicateBatchResponse);
+}

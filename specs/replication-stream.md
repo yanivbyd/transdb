@@ -69,7 +69,7 @@ service Replication {
 
 `AppState` gains `replication: Option<ReplicationClient>`. The client wraps an in-memory `PendingQueue` (`VecDeque<MutationEntry>`) and a `Notify`. `Server::run` calls `ReplicationClient::connect(replica_grpc_addr)` before starting the HTTP listener when configured.
 
-Each mutation's `seq` equals the global `next_version` assigned under the store's write lock — no separate counter is needed in the queue.
+Each mutation's `seq` equals the global `next_version` assigned under the store's write lock — no separate counter is needed in the queue. `next_version` starts at 1, so `0` is a safe sentinel for an empty-batch response.
 
 `enqueue(seq, op)` appends the entry and wakes the background sender, which:
 
@@ -90,7 +90,7 @@ After a successful write, handlers call `enqueue` if `replication` is `Some`. `h
 - **PutOp**: Write `Entry { value: Some(value), version, expires_at }` unconditionally.
 - **DeleteOp**: Write tombstone `Entry { value: None, version, expires_at: Some(expires_at) }` unconditionally.
 
-Returns `applied_through` = seq of the last entry processed, or `0` for an empty batch. An unrecognised `operation` variant returns `Status::invalid_argument`; preceding entries are not rolled back.
+Returns `applied_through` = seq of the last entry processed, or `0` for an empty batch (safe because `next_version` starts at 1). The replica does not advance its own `next_version` counter; replica promotion requires a larger architectural change and is out of scope. An unrecognised `operation` variant returns `Status::invalid_argument`; preceding entries are not rolled back.
 
 `Server::run` binds the gRPC listener when `role == Replica && grpc_addr.is_some()`, spawns `ReplicationService`, then starts the HTTP listener and sends `ready_tx`.
 
@@ -98,23 +98,23 @@ Returns `applied_through` = seq of the last entry processed, or `0` for an empty
 
 ## Delivery Semantics
 
-| Property | Behaviour |
-|---|---|
-| **Ordering** | `seq == next_version` (assigned under primary write lock); replica applies in seq order. |
-| **Durability** | Queue retained until ACKed; lost on primary restart. |
-| **Consistency** | Eventual. |
-| **ACK** | `applied_through` confirms all entries up to that seq; lower entries are safe to drop. |
+| Property        | Behaviour                                                                              |
+|-----------------|----------------------------------------------------------------------------------------|
+| **Ordering**    | `seq == next_version` (assigned under primary write lock); replica applies in seq order. |
+| **Durability**  | Queue retained until ACKed; lost on primary restart.                                   |
+| **Consistency** | Eventual.                                                                              |
+| **ACK**         | `applied_through` confirms all entries up to that seq; lower entries are safe to drop. |
 
 ---
 
 ## Error Handling
 
-| Scenario | Primary | Replica |
-|---|---|---|
-| Replica unreachable or RPC error | Log `WARN`; retain queue; retry after 100 ms | — |
-| Unknown `operation` variant | — | `Status::invalid_argument`; preceding entries already applied |
-| Write-lock timeout | — | `Status::resource_exhausted`; primary retries |
-| Empty batch | — | `applied_through: 0`; no-op |
+| Scenario                         | Primary                                       | Replica                                                        |
+|----------------------------------|-----------------------------------------------|----------------------------------------------------------------|
+| Replica unreachable or RPC error | Log `WARN`; retain queue; retry after 100 ms  | —                                                              |
+| Unknown `operation` variant      | —                                             | `Status::invalid_argument`; preceding entries already applied  |
+| Write-lock timeout               | —                                             | `Status::resource_exhausted`; primary retries                  |
+| Empty batch                      | —                                             | `applied_through: 0`; no-op                                    |
 
 ---
 
@@ -161,3 +161,4 @@ PUT on primary → GET on replica eventually returns same value; DELETE on prima
 - **Idempotency cache replication**: Only key-value data is replicated.
 - **Multiple replicas**: One replica; fan-out deferred.
 - **Linearizability**: Replica reads may be stale.
+- **Replica promotion**: Promoting a replica to primary requires a larger architectural change (e.g., syncing `next_version`) and is out of scope.

@@ -30,6 +30,10 @@ This is TransDB, a distributed in-memory key-value database written in Rust. See
 - All new code must be covered. Uncovered lines must be either tested or explicitly justified (e.g. `run()` which blocks forever is inherently not unit-testable)
 - Prefer fewer, broader tests over many narrow ones. If a single test can assert multiple related behaviours without obscuring intent, merge them. Only use separate tests when the failure modes are meaningfully distinct and a combined test would hide which behaviour broke.
 
+## Formatting
+
+- **Markdown tables** must be column-aligned: pad cells with spaces so all column separators line up vertically.
+
 ## Specification Workflow
 
 Specifications are developed iteratively through collaboration:
