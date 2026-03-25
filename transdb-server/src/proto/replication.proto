@@ -21,7 +21,7 @@ message DeleteOp {
   uint64 expires_at = 3; // tombstone TTL (absolute Unix epoch seconds)
 }
 
-message ReplicateBatchResponse { uint64 applied_through = 1; }
+message ReplicateBatchResponse { uint64 last_seq = 1; }
 
 service Replication {
   rpc ReplicateBatch(ReplicateBatchRequest) returns (ReplicateBatchResponse);

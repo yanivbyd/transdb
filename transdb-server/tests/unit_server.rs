@@ -108,7 +108,7 @@ async fn assert_get(state: &AppState, key: &str, expected: Option<&[u8]>) {
 fn test_server_config_custom() {
     use std::net::SocketAddr;
     let addr: SocketAddr = "0.0.0.0:9000".parse().unwrap();
-    let config = ServerConfig { address: addr, role: NodeRole::Primary, topology: None };
+    let config = ServerConfig { address: addr, role: NodeRole::Primary, topology: None, grpc_addr: None };
     assert_eq!(config.address.to_string(), "0.0.0.0:9000");
 }
 
@@ -116,7 +116,7 @@ fn test_server_config_custom() {
 fn test_server_creation_with_config() {
     use std::net::SocketAddr;
     let addr: SocketAddr = "0.0.0.0:9000".parse().unwrap();
-    let config = ServerConfig { address: addr, role: NodeRole::Primary, topology: None };
+    let config = ServerConfig { address: addr, role: NodeRole::Primary, topology: None, grpc_addr: None };
     let server = Server::new(config);
     assert_eq!(server.address().to_string(), "0.0.0.0:9000");
 }

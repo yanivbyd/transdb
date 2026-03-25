@@ -17,6 +17,10 @@ use transdb_common::{ErrorResponse, Topology, MAX_KEY_SIZE, MAX_VALUE_SIZE};
 pub mod config;
 use config::{LOCK_TIMEOUT, TOMBSTONE_TTL_SECS};
 
+pub mod replication;
+use replication::proto::replication_server::ReplicationServer;
+use replication::service::ReplicationReceiver;
+
 /// Abstraction over current time for testability.
 pub trait Clock: Send + Sync {
     fn unix_now_secs(&self) -> u64;
@@ -108,6 +112,8 @@ pub struct ServerConfig {
     pub address: SocketAddr,
     pub role: NodeRole,
     pub topology: Option<Topology>,
+    /// gRPC address for the replica's replication listener. Only used when role == Replica.
+    pub grpc_addr: Option<SocketAddr>,
 }
 
 /// TransDB Server
@@ -139,6 +145,20 @@ impl Server {
     /// Run the server, signalling `ready_tx` with the bound address once accepting connections
     pub async fn run(self, ready_tx: tokio::sync::oneshot::Sender<SocketAddr>) -> Result<(), Box<dyn std::error::Error>> {
         let state = AppState::new(Arc::new(SystemClock), self.config.role.clone());
+
+        if self.config.role == NodeRole::Replica {
+            if let Some(grpc_addr) = self.config.grpc_addr {
+                let db = state.db.clone();
+                tokio::spawn(async move {
+                    tonic::transport::Server::builder()
+                        .add_service(ReplicationServer::new(ReplicationReceiver::new(db)))
+                        .serve(grpc_addr)
+                        .await
+                        .expect("gRPC server failed");
+                });
+            }
+        }
+
         let app = Self::create_router(state);
         let listener = tokio::net::TcpListener::bind(self.config.address).await?;
         let local_addr = listener.local_addr()?;

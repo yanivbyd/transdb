@@ -19,6 +19,11 @@ struct Args {
     /// Path to a JSON file containing the cluster Topology.
     #[arg(long)]
     topology: std::path::PathBuf,
+
+    /// gRPC address for the replica to bind its replication listener on (e.g. 0.0.0.0:5000).
+    /// Only used when --role=replica.
+    #[arg(long)]
+    replica_grpc_addr: Option<String>,
 }
 
 #[tokio::main]
@@ -41,10 +46,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .parse()?,
     };
 
+    let grpc_addr = match args.replica_grpc_addr {
+        Some(addr) => Some(addr.parse()?),
+        None => None,
+    };
+
     let config = ServerConfig {
         address,
         role,
         topology: Some(topology),
+        grpc_addr,
     };
 
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();

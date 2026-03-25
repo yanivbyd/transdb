@@ -26,6 +26,7 @@ async fn start_node(role: NodeRole) -> SocketAddr {
         address: "127.0.0.1:0".parse().unwrap(),
         role,
         topology: None,
+        grpc_addr: None,
     });
     tokio::spawn(async move {
         server.run(ready_tx).await.expect("server failed");
